@@ -1,0 +1,149 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Electron build outputs
+dist/
+out/
+*.exe
+*.dmg
+*.deb
+*.rpm
+*.AppImage
+*.snap
+*.zip
+*.dmg
+*.pkg
+*.nupkg
+*.msi
+*.blockmap
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+.project
+.classpath
+.settings/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Build tool cache
+.cache/
+.parcel-cache/
+.eslintcache
+.prettiercache
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Electron Forge
+.forge/
+
+# Backup files
+*.backup
+*.bak
+*.tmp
+
+# User data storage (Electron Store)
+*user-preferences.json
+*user-*.json
+gridtrack-monitor-*.exe
+
+# PostgreSQL local files
+*.sql
+*.dump
+*.backup
+
+# Screenshots (local)
+*.png
+*.jpg
+*.jpeg
+
+# Temporary files
+temp/
+tmp/
+.temp/
+.tmp/
+
+# Certificates
+*.pem
+*.p12
+*.crt
+*.key
+
+# Docker
+.docker/
+Dockerfile.dev
+
+# Sentry
+.sentry-native/
+
+# TypeScript (if using)
+*.tsbuildinfo
+
+# Babel
+.babel-cache/
+
+# Rollup
+.rollup.cache/
+
+# Webpack
+webpack-stats.json
+
+# Vite
+.vite/
+vite.config.js.timestamp-*
+
+# macOS specific
+.AppleDouble
+.LSOverride
+._*Icon
+.fseventsd
+.VolumeIcon.icns
+.com.apple.timemachine.supported
+
+# Windows specific
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux specific
+.directory
+*~
+.document.events
+.events.tmp

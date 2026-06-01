@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GridTrack — Activity Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-noise"></div>
+  <div class="bg-glow"></div>
+
+  <div class="shell">
+    <div class="panel">
+
+      <!-- Top bar -->
+      <div class="panel-topbar">
+        <div class="topbar-left">
+          <div class="logo-mark">
+            <svg width="34" height="34" viewBox="0 0 34 34" fill="none">
+              <rect width="34" height="34" rx="9" fill="url(#logoGrad)"/>
+              <rect x="8" y="8"  width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.9)"/>
+              <rect x="19" y="8"  width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.5)"/>
+              <rect x="8" y="19" width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.5)"/>
+              <rect x="19" y="19" width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.9)"/>
+              <defs>
+                <linearGradient id="logoGrad" x1="0" y1="0" x2="34" y2="34">
+                  <stop stop-color="#C9922A"/>
+                  <stop offset="1" stop-color="#8B5E1A"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="logo-text">
+            <span class="logo-name">GRIDTRACK</span>
+            <span class="logo-badge">PRO</span>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="live-indicator" id="liveIndicator">
+            <span class="live-dot" id="headerStatusDot"></span>
+            <span class="live-label" id="headerStatusText">READY</span>
+          </div>
+          <span class="version-chip">v2.4.1</span>
+        </div>
+      </div>
+
+      <!-- Body -->
+      <div class="panel-body">
+
+        <div class="headline-block">
+          <h1 class="headline">Time<br><em>Tracking</em></h1>
+          <p class="headline-sub">Start your session to begin monitoring activity</p>
+        </div>
+
+        <!-- Fields -->
+        <div class="fields-wrap">
+          <div class="field-col">
+            <label class="field-label" for="nameInput">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="3.5" r="2" stroke="currentColor" stroke-width="1.1"/><path d="M1 9c0-1.657 1.79-3 4-3s4 1.343 4 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+              Full Name
+            </label>
+            <input type="text" id="nameInput" class="field-input" placeholder="John Doe" autocomplete="name"/>
+          </div>
+          <div class="field-col">
+            <label class="field-label" for="phoneInput">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="2" y="0.5" width="6" height="9" rx="1.2" stroke="currentColor" stroke-width="1.1"/><circle cx="5" cy="7.5" r="0.6" fill="currentColor"/></svg>
+              Phone Number
+            </label>
+            <input type="tel" id="phoneInput" class="field-input" placeholder="+1 (555) 000-0000" autocomplete="tel"/>
+          </div>
+        </div>
+
+        <!-- Status card -->
+        <div class="status-card" id="statusCard" style="display:none">
+          <div class="status-card-top">
+            <div class="status-pill">
+              <span class="status-dot" id="statusDot"></span>
+              <span class="status-text" id="statusText">Not checked in</span>
+            </div>
+            <span class="status-since" id="statusTime">—</span>
+          </div>
+          <div class="status-rule"></div>
+          <div class="metrics-row">
+            <div class="metric">
+              <div class="metric-num"><span id="todayHours">0.0</span><sub>hrs</sub></div>
+              <div class="metric-lbl">Today</div>
+            </div>
+            <div class="metric-sep"></div>
+            <div class="metric">
+              <div class="metric-num"><span id="todaySessions">0</span><sub>sessions</sub></div>
+              <div class="metric-lbl">Total</div>
+            </div>
+            <div class="metric-sep"></div>
+            <div class="metric">
+              <div class="metric-num"><span id="todayScreenshots">0</span><sub>caps</sub></div>
+              <div class="metric-lbl">Screenshots</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <button id="actionBtn" class="cta-btn" data-state="start">
+          <span class="cta-inner">
+            <span class="cta-icon" id="btnIcon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><polygon points="5,3 13,8 5,13" fill="currentColor"/></svg>
+            </span>
+            <span class="cta-label" id="btnLabel">Start Session</span>
+          </span>
+          <span class="cta-sheen"></span>
+        </button>
+
+        <!-- Info -->
+        <div class="info-list">
+          <div class="info-row">
+            <span class="info-dot"></span>
+            Minimizes to overlay pill during active sessions
+          </div>
+          <div class="info-row">
+            <span class="info-dot"></span>
+            Captures screen at randomised 1–30 min intervals
+          </div>
+          <div class="info-row">
+            <span class="info-dot"></span>
+            End-to-end encrypted · data never leaves your server
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Footer -->
+      <div class="panel-foot">
+        <span>SOC 2 Type II</span>
+        <span class="foot-sep">·</span>
+        <span>GDPR Compliant</span>
+        <span class="foot-sep">·</span>
+        <span>Enterprise Grade</span>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

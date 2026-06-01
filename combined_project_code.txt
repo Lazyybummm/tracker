@@ -1,0 +1,3863 @@
+
+================================================================================
+FILE: preload.js
+================================================================================
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('api', {
+  checkIn: (phone, name) => ipcRenderer.invoke('check-in', phone, name),
+  checkOut: () => ipcRenderer.invoke('check-out'),
+  getStatus: () => ipcRenderer.invoke('get-status'),
+  saveCredentials: (phone, name) => ipcRenderer.invoke('save-credentials', phone, name),
+  getCredentials: () => ipcRenderer.invoke('get-credentials'),
+  saveOverlayPosition: (bounds) => ipcRenderer.invoke('save-overlay-position', bounds),
+  getOverlayPosition: () => ipcRenderer.invoke('get-overlay-position'),
+  onScreenshotTaken: (callback) => {
+    ipcRenderer.on('screenshot-taken', (event, filename) => callback(filename));
+  },
+  onStatusUpdate: (callback) => {
+    ipcRenderer.on('status-update', (event, status) => callback(status));
+  },
+  onNextScreenshot: (callback) => {
+    ipcRenderer.on('next-screenshot', (event, minutes) => callback(minutes));
+  }
+});
+
+================================================================================
+FILE: renderer.js
+================================================================================
+
+// This runs in both windows
+console.log('Renderer loaded');
+
+// Check if we're in the overlay window
+const isOverlay = window.location.pathname.includes('overlay.html');
+
+if (isOverlay) {
+  // Overlay window logic
+  const checkoutBtn = document.getElementById('checkoutBtn');
+  const timerValue = document.getElementById('timerValue');
+  let nextIntervalMinutes = null;
+  
+  // Listen for next screenshot timing
+  if (window.api.onScreenshotTaken) {
+    window.api.onScreenshotTaken((filename) => {
+      const container = document.getElementById('notification-container');
+      const notification = document.createElement('div');
+      notification.className = 'notification';
+      notification.innerHTML = `📸 Screenshot captured: ${filename}`;
+      container.appendChild(notification);
+      
+      setTimeout(() => {
+        notification.remove();
+      }, 3000);
+    });
+  }
+  
+  // Listen for next screenshot timing updates
+  if (window.api.onStatusUpdate) {
+    window.api.onStatusUpdate((data) => {
+      // Handle status updates if needed
+    });
+  }
+  
+  // Custom event listener for next screenshot timing
+  window.electronAPI = window.api;
+  
+  checkoutBtn.addEventListener('click', async () => {
+    await window.api.checkOut();
+  });
+  
+} else {
+  // Check-in window logic
+  const actionBtn = document.getElementById('actionBtn');
+  const nameInput = document.getElementById('nameInput');
+  const phoneInput = document.getElementById('phoneInput');
+  const statusCard = document.getElementById('statusCard');
+  const statusIndicator = document.getElementById('statusIndicator');
+  const statusText = document.getElementById('statusText');
+  const todayHoursElem = document.getElementById('todayHours');
+  const todaySessionsElem = document.getElementById('todaySessions');
+  const todayScreenshotsElem = document.getElementById('todayScreenshots');
+  
+  let isCheckedIn = false;
+  
+  // Load saved credentials
+  async function loadSavedCredentials() {
+    const credentials = await window.api.getCredentials();
+    if (credentials.phone) {
+      phoneInput.value = credentials.phone;
+    }
+    if (credentials.name) {
+      nameInput.value = credentials.name;
+    }
+  }
+  
+  // Update UI based on check-in status
+  async function updateStatus() {
+    const status = await window.api.getStatus();
+    
+    if (status.hasActiveSession) {
+      isCheckedIn = true;
+      actionBtn.textContent = 'Stop Working';
+      actionBtn.classList.remove('btn-primary');
+      actionBtn.classList.add('btn-danger');
+      statusCard.style.display = 'block';
+      statusIndicator.className = 'status-indicator active';
+      statusText.textContent = 'Currently Working';
+      todayHoursElem.textContent = status.todayHours?.total_hours || '0';
+      todaySessionsElem.textContent = status.todayHours?.session_count || '0';
+      todayScreenshotsElem.textContent = status.todayHours?.total_screenshots || '0';
+      
+      // Disable input fields
+      nameInput.disabled = true;
+      phoneInput.disabled = true;
+    } else {
+      isCheckedIn = false;
+      actionBtn.textContent = 'Start Working';
+      actionBtn.classList.remove('btn-danger');
+      actionBtn.classList.add('btn-primary');
+      statusCard.style.display = 'none';
+      
+      // Enable input fields
+      nameInput.disabled = false;
+      phoneInput.disabled = false;
+    }
+  }
+  
+  // Check in
+  async function checkIn() {
+    const name = nameInput.value.trim();
+    const phone = phoneInput.value.trim();
+    
+    if (!name || !phone) {
+      alert('Please enter both name and phone number');
+      return;
+    }
+    
+    actionBtn.disabled = true;
+    actionBtn.textContent = 'Checking in...';
+    
+    const result = await window.api.checkIn(phone, name);
+    
+    if (result.success) {
+      console.log('Check-in successful');
+      await updateStatus();
+    } else {
+      alert('Check-in failed: ' + (result.error || 'Unknown error'));
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Start Working';
+    }
+  }
+  
+  // Check out
+  async function checkOut() {
+    actionBtn.disabled = true;
+    actionBtn.textContent = 'Checking out...';
+    
+    const result = await window.api.checkOut();
+    
+    if (result.success) {
+      console.log('Check-out successful');
+      await updateStatus();
+    } else {
+      alert('Check-out failed');
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Stop Working';
+    }
+  }
+  
+  // Handle button click
+  actionBtn.addEventListener('click', async () => {
+    if (isCheckedIn) {
+      await checkOut();
+    } else {
+      await checkIn();
+    }
+  });
+  
+  // Load saved credentials and update status
+  loadSavedCredentials();
+  updateStatus();
+  
+  // Listen for status updates from main process
+  if (window.api.onStatusUpdate) {
+    window.api.onStatusUpdate(() => {
+      updateStatus();
+    });
+  }
+}
+
+================================================================================
+FILE: index.html
+================================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GridTrack — Activity Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Ambient background elements -->
+  <div class="bg-orb bg-orb-1"></div>
+  <div class="bg-orb bg-orb-2"></div>
+  <div class="bg-grid"></div>
+
+  <div class="shell">
+    <div class="panel">
+
+      <!-- Top bar -->
+      <div class="panel-topbar">
+        <div class="topbar-left">
+          <div class="logo-mark">
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+              <rect width="32" height="32" rx="8" fill="url(#lg)"/>
+              <rect x="8" y="8" width="6" height="6" rx="1.5" stroke="white" stroke-width="1.5" fill="none"/>
+              <rect x="18" y="8" width="6" height="6" rx="1.5" stroke="white" stroke-width="1.5" fill="none"/>
+              <rect x="8" y="18" width="6" height="6" rx="1.5" stroke="white" stroke-width="1.5" fill="none"/>
+              <rect x="18" y="18" width="6" height="6" rx="1.5" stroke="white" stroke-width="1.5" fill="none"/>
+              <defs>
+                <linearGradient id="lg" x1="0" y1="0" x2="32" y2="32">
+                  <stop stop-color="#D4A843"/>
+                  <stop offset="1" stop-color="#C17F24"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="logo-text">
+            <span class="logo-name">GRIDTRACK</span>
+            <span class="logo-pro">PRO</span>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="status-indicator">
+            <span class="status-indicator-dot" id="headerStatusDot"></span>
+            <span class="status-indicator-text" id="headerStatusText">Ready</span>
+          </div>
+          <span class="version-badge">v2.4.1</span>
+        </div>
+      </div>
+
+      <!-- Main content -->
+      <div class="panel-body">
+
+        <!-- Title section -->
+        <div class="title-section">
+          <h1 class="headline">Activity<br><span class="headline-accent">Monitor</span></h1>
+          <p class="headline-sub">Secure employee tracking dashboard</p>
+        </div>
+
+        <!-- Identity fields -->
+        <div class="fields-section">
+          <div class="field-row">
+            <div class="field-group">
+              <label class="field-label" for="nameInput">
+                <span class="field-label-icon">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="4" r="2.5" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 10.5C1.5 8.567 3.567 7 6 7s4.5 1.567 4.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                </span>
+                Full Name
+              </label>
+              <input type="text" id="nameInput" class="field-input" placeholder="John Doe" autocomplete="name"/>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="phoneInput">
+                <span class="field-label-icon">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2.5" y="1" width="7" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><circle cx="6" cy="9" r="0.75" fill="currentColor"/></svg>
+                </span>
+                Phone Number
+              </label>
+              <input type="tel" id="phoneInput" class="field-input" placeholder="+1 (555) 000-0000" autocomplete="tel"/>
+            </div>
+          </div>
+        </div>
+
+        <!-- Status card -->
+        <div class="status-card" id="statusCard" style="display:none">
+          <div class="status-card-inner">
+            <div class="status-row">
+              <div class="status-badge" id="statusBadge">
+                <span class="status-dot" id="statusDot"></span>
+                <span class="status-label" id="statusText">Not checked in</span>
+              </div>
+              <div class="status-time" id="statusTime">—</div>
+            </div>
+            <div class="divider"></div>
+            <div class="metrics-row">
+              <div class="metric">
+                <span class="metric-value" id="todayHours">0.0</span>
+                <span class="metric-unit">hrs</span>
+                <span class="metric-label">Today</span>
+              </div>
+              <div class="metric-sep"></div>
+              <div class="metric">
+                <span class="metric-value" id="todaySessions">0</span>
+                <span class="metric-unit">sessions</span>
+                <span class="metric-label">Total</span>
+              </div>
+              <div class="metric-sep"></div>
+              <div class="metric">
+                <span class="metric-value" id="todayScreenshots">0</span>
+                <span class="metric-unit">captures</span>
+                <span class="metric-label">Screenshots</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action button - Spacious redesign -->
+        <button id="actionBtn" class="action-btn" data-state="start">
+          <span class="action-btn-inner">
+            <span class="action-btn-icon" id="btnIcon">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <polygon points="7,4 14,9 7,14" fill="currentColor"/>
+              </svg>
+            </span>
+            <span class="action-btn-label" id="btnLabel">Start Session</span>
+          </span>
+          <span class="action-btn-shimmer"></span>
+        </button>
+
+        <!-- Info strip -->
+        <div class="info-strip">
+          <div class="info-item">
+            <div class="info-icon">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1"/><path d="M6 3.5v2.5M6 8h.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            </div>
+            <span>Minimizes to overlay during active sessions</span>
+          </div>
+          <div class="info-item">
+            <div class="info-icon">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1.5" y="2.5" width="9" height="7" rx="1" stroke="currentColor" stroke-width="1"/><path d="M4 2.5V2a1 1 0 0 1 4 0v.5" stroke="currentColor" stroke-width="1"/><circle cx="6" cy="6.5" r="1" fill="currentColor" fill-opacity="0.6"/></svg>
+            </div>
+            <span>Captures at randomized intervals (1–30 min)</span>
+          </div>
+          <div class="info-item">
+            <div class="info-icon">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1L10.5 3v3.5c0 2.5-2 4.5-4.5 5C3.5 11.5 1.5 9.5 1.5 7V3L6 1z" stroke="currentColor" stroke-width="1"/><circle cx="6" cy="6" r="1.5" stroke="currentColor" stroke-width="0.8"/></svg>
+            </div>
+            <span>End-to-end encrypted storage</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Bottom bar -->
+      <div class="panel-footer">
+        <span class="footer-text">Enterprise-grade · SOC 2 Type II · GDPR Compliant</span>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
+
+================================================================================
+FILE: styles.css
+================================================================================
+
+/* ── Reset & Base ─────────────────────────────────────────── */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-deep:       #0a0b0e;
+  --bg-panel:      #111318;
+  --bg-surface:    #181c24;
+  --bg-raised:     #1e2330;
+  --bg-hover:      #252b3b;
+
+  --border-dim:    rgba(255,255,255,0.05);
+  --border-mid:    rgba(255,255,255,0.08);
+  --border-gold:   rgba(212,168,67,0.3);
+
+  --gold-400:      #D4A843;
+  --gold-300:      #E2BE6A;
+  --gold-200:      #EDD48E;
+
+  --text-primary:  #F0EDE6;
+  --text-secondary:#9DA3B0;
+  --text-muted:    #5A6178;
+  --text-gold:     #D4A843;
+
+  --green-active:  #22C55E;
+  --green-glow:    rgba(34,197,94,0.15);
+  --red-stop:      #EF4444;
+  --red-glow:      rgba(239,68,68,0.15);
+
+  --radius-sm:     8px;
+  --radius-md:     14px;
+  --radius-lg:     20px;
+  --radius-xl:     28px;
+
+  --font-display:  'Syne', sans-serif;
+  --font-body:     'DM Sans', sans-serif;
+  --font-mono:     'DM Mono', monospace;
+  --font-button:   'Inter', 'DM Sans', sans-serif;
+
+  --transition:    0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Ambient Background ───────────────────────────────────── */
+.bg-orb {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 0;
+  animation: drift 18s ease-in-out infinite alternate;
+}
+
+.bg-orb-1 {
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(212,168,67,0.08) 0%, transparent 70%);
+  top: -120px;
+  right: -100px;
+  animation-duration: 20s;
+}
+
+.bg-orb-2 {
+  width: 360px;
+  height: 360px;
+  background: radial-gradient(circle, rgba(99,102,241,0.06) 0%, transparent 70%);
+  bottom: -80px;
+  left: -80px;
+  animation-duration: 26s;
+  animation-direction: alternate-reverse;
+}
+
+.bg-grid {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.012) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+@keyframes drift {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(30px, -20px) scale(1.05); }
+}
+
+/* ── Shell & Panel ────────────────────────────────────────── */
+.shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 520px;
+  animation: panelIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(24px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.panel {
+  background: var(--bg-panel);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-mid);
+  box-shadow:
+    0 0 0 1px var(--border-dim),
+    0 32px 64px -16px rgba(0,0,0,0.7),
+    0 0 80px -20px rgba(212,168,67,0.05);
+  overflow: hidden;
+  backdrop-filter: blur(0px);
+}
+
+/* ── Top Bar ──────────────────────────────────────────────── */
+.panel-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--border-dim);
+  background: linear-gradient(to bottom, rgba(255,255,255,0.02), transparent);
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-mark {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.logo-mark:hover {
+  transform: scale(1.02);
+}
+
+.logo-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.logo-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.logo-pro {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--gold-400);
+  background: rgba(212,168,67,0.1);
+  border: 1px solid var(--border-gold);
+  border-radius: 4px;
+  padding: 2px 6px;
+  letter-spacing: 0.08em;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--bg-surface);
+  border-radius: 20px;
+  border: 1px solid var(--border-dim);
+}
+
+.status-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.status-indicator-dot.online {
+  background: var(--green-active);
+  box-shadow: 0 0 0 2px var(--green-glow);
+}
+
+.status-indicator-text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.version-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+/* ── Panel Body ───────────────────────────────────────────── */
+.panel-body {
+  padding: 36px 32px 32px;
+}
+
+/* ── Title Section ────────────────────────────────────────── */
+.title-section {
+  margin-bottom: 32px;
+}
+
+.headline {
+  font-family: var(--font-display);
+  font-size: 42px;
+  font-weight: 800;
+  line-height: 1.0;
+  letter-spacing: -0.04em;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.headline-accent {
+  color: var(--gold-400);
+  position: relative;
+  display: inline-block;
+}
+
+.headline-accent::after {
+  content: '';
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--gold-400), transparent);
+  opacity: 0.3;
+}
+
+.headline-sub {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+  font-family: var(--font-body);
+}
+
+/* ── Fields ───────────────────────────────────────────────── */
+.fields-section {
+  margin-bottom: 28px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.field-label-icon {
+  color: var(--gold-400);
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.field-group:hover .field-label-icon {
+  opacity: 1;
+}
+
+.field-input {
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 14px;
+  font-family: var(--font-body);
+  font-weight: 400;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+  outline: none;
+}
+
+.field-input::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.field-input:hover {
+  border-color: var(--border-mid);
+  background: var(--bg-raised);
+}
+
+.field-input:focus {
+  border-color: var(--gold-400);
+  background: var(--bg-raised);
+  box-shadow: 0 0 0 3px rgba(212,168,67,0.08);
+}
+
+/* ── Status Card ──────────────────────────────────────────── */
+.status-card {
+  margin-bottom: 32px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-mid);
+  background: var(--bg-surface);
+  overflow: hidden;
+  animation: cardReveal 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes cardReveal {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.status-card-inner {
+  padding: 20px 24px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  transition: background var(--transition), box-shadow var(--transition);
+}
+
+.status-dot.active {
+  background: var(--green-active);
+  box-shadow: 0 0 0 4px var(--green-glow);
+  animation: dotPulse 2.4s ease-in-out infinite;
+}
+
+.status-dot.inactive {
+  background: var(--text-muted);
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes dotPulse {
+  0%, 100% { box-shadow: 0 0 0 0px var(--green-glow); }
+  50%       { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+}
+
+.status-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.status-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border-dim);
+  margin-bottom: 20px;
+}
+
+.metrics-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.metric {
+  flex: 1;
+  text-align: center;
+}
+
+.metric-value {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.metric-unit {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--gold-400);
+  letter-spacing: 0.06em;
+  margin-left: 3px;
+}
+
+.metric-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+
+.metric-sep {
+  width: 1px;
+  height: 44px;
+  background: var(--border-dim);
+  flex-shrink: 0;
+}
+
+/* ── Action Button - Spacious Redesign ──────────────────────── */
+.action-btn {
+  position: relative;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 60px;
+  cursor: pointer;
+  font-family: var(--font-button);
+  overflow: hidden;
+  background: linear-gradient(135deg, #D4A843 0%, #C17F24 100%);
+  box-shadow:
+    0 6px 28px rgba(212,168,67,0.28),
+    inset 0 1px 0 rgba(255,255,255,0.18);
+  transition: transform var(--transition), box-shadow var(--transition), background var(--transition);
+  margin-bottom: 32px;
+}
+
+.action-btn:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow:
+    0 12px 36px rgba(212,168,67,0.38),
+    inset 0 1px 0 rgba(255,255,255,0.22);
+}
+
+.action-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 4px 16px rgba(212,168,67,0.2);
+}
+
+.action-btn[data-state="stop"] {
+  background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+  box-shadow:
+    0 6px 28px rgba(239,68,68,0.28),
+    inset 0 1px 0 rgba(255,255,255,0.14);
+}
+
+.action-btn[data-state="stop"]:hover:not(:disabled) {
+  box-shadow:
+    0 12px 36px rgba(239,68,68,0.38),
+    inset 0 1px 0 rgba(255,255,255,0.18);
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+.action-btn-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 18px 28px;
+}
+
+.action-btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,0.96);
+  transition: transform 0.25s ease;
+}
+
+.action-btn:hover:not(:disabled) .action-btn-icon {
+  transform: scale(1.08);
+}
+
+.action-btn-label {
+  font-size: 17px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.96);
+  letter-spacing: 0.03em;
+  font-family: var(--font-button);
+  text-transform: uppercase;
+}
+
+.action-btn-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255,255,255,0.12) 50%,
+    transparent 60%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 3.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  0%   { background-position: -100% 0; }
+  50%  { background-position: 200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── Info Strip ───────────────────────────────────────────── */
+.info-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-weight: 400;
+  transition: color 0.2s ease;
+}
+
+.info-item:hover {
+  color: var(--text-secondary);
+}
+
+.info-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px;
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+}
+
+.info-item:hover .info-icon {
+  background: rgba(212,168,67,0.1);
+}
+
+.info-icon svg {
+  color: var(--gold-400);
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.info-item:hover .info-icon svg {
+  opacity: 1;
+}
+
+/* ── Footer ───────────────────────────────────────────────── */
+.panel-footer {
+  padding: 16px 28px;
+  border-top: 1px solid var(--border-dim);
+  background: rgba(0,0,0,0.2);
+  text-align: center;
+}
+
+.footer-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+/* ── Responsive ───────────────────────────────────────────── */
+@media (max-width: 520px) {
+  body { padding: 16px; }
+
+  .panel-body { padding: 24px 20px 20px; }
+  .panel-topbar { padding: 16px 20px; }
+  .panel-footer { padding: 12px 20px; }
+
+  .headline { font-size: 32px; }
+
+  .field-row { grid-template-columns: 1fr; gap: 14px; }
+  
+  .status-card-inner { padding: 16px; }
+  
+  .metrics-row { gap: 8px; }
+  .metric-value { font-size: 22px; }
+  .metric-unit { font-size: 9px; }
+  
+  .topbar-right { gap: 10px; }
+  .status-indicator { display: none; }
+  
+  .action-btn-inner { padding: 14px 24px; }
+  .action-btn-label { font-size: 15px; }
+}
+
+@media (max-width: 400px) {
+  .metric-label { font-size: 8px; }
+  .metric-value { font-size: 20px; }
+  .action-btn-inner { padding: 12px 20px; }
+  .action-btn-label { font-size: 14px; }
+}
+
+================================================================================
+FILE: screenshot-service.js
+================================================================================
+
+const screenshot = require('screenshot-desktop');
+const sharp = require('sharp');
+
+class ScreenshotService {
+  async capture() {
+    try {
+      // Capture screenshot as buffer
+      const imgBuffer = await screenshot();
+      return imgBuffer;
+    } catch (error) {
+      console.error('Screenshot failed:', error);
+      return null;
+    }
+  }
+  
+  async convertToJPEG(buffer, quality = 75) {
+    try {
+      const jpegBuffer = await sharp(buffer)
+        .jpeg({ quality: quality, progressive: true })
+        .toBuffer();
+      return jpegBuffer;
+    } catch (error) {
+      console.error('JPEG conversion failed:', error);
+      return buffer;
+    }
+  }
+}
+
+module.exports = new ScreenshotService();
+
+================================================================================
+FILE: admin-dashboard.html
+================================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WorkTrack Pro — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* ── CSS Variables (Light Mode Default) ───────────────── */
+    :root {
+      --bg-void:       #f5f7fb;
+      --bg-base:       #ffffff;
+      --bg-surface:    #f8fafc;
+      --bg-raised:     #f1f5f9;
+      --bg-hover:      #eef2ff;
+      --bg-card:       #ffffff;
+
+      --border-faint:  rgba(0,0,0,0.06);
+      --border-subtle: rgba(0,0,0,0.08);
+      --border-mid:    rgba(0,0,0,0.12);
+      --border-teal:   rgba(0,212,180,0.25);
+
+      --teal:          #00D4B4;
+      --teal-dim:      rgba(0,212,180,0.08);
+      --teal-glow:     rgba(0,212,180,0.15);
+      --teal-dark:     #00A896;
+
+      --amber:         #F59E0B;
+      --amber-dim:     rgba(245,158,11,0.08);
+      --rose:          #EF4444;
+      --rose-dim:      rgba(239,68,68,0.08);
+      --violet:        #8B5CF6;
+      --violet-dim:    rgba(139,92,246,0.08);
+      --green:         #10B981;
+      --green-dim:     rgba(16,185,129,0.08);
+
+      --text-hi:       #0F172A;
+      --text-mid:      #475569;
+      --text-lo:       #94A3B8;
+      --text-teal:     #00D4B4;
+
+      --sidebar-w:     260px;
+      --radius-sm:     8px;
+      --radius-md:     14px;
+      --radius-lg:     20px;
+
+      --font-display:  'Bebas Neue', sans-serif;
+      --font-body:     'DM Sans', sans-serif;
+      --font-mono:     'DM Mono', monospace;
+
+      --ease:          cubic-bezier(0.4, 0, 0.2, 1);
+      --spring:        cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    /* Dark mode */
+    [data-theme="dark"] {
+      --bg-void:       #070809;
+      --bg-base:       #0d0f12;
+      --bg-surface:    #131720;
+      --bg-raised:     #1a2030;
+      --bg-hover:      #1f2638;
+      --bg-card:       #161b27;
+
+      --border-faint:  rgba(255,255,255,0.05);
+      --border-subtle: rgba(255,255,255,0.08);
+      --border-mid:    rgba(255,255,255,0.12);
+      --border-teal:   rgba(0,212,180,0.3);
+
+      --text-hi:       #F0EDE6;
+      --text-mid:      #8B93A7;
+      --text-lo:       #4A5168;
+      --text-teal:     #00D4B4;
+    }
+
+    /* ── Reset ─────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-void);
+      color: var(--text-hi);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+      transition: background-color 0.3s var(--ease), color 0.2s var(--ease);
+    }
+
+    /* ── Scrollbar ─────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 99px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-mid); }
+
+    /* ── Layout ────────────────────────────────────── */
+    .layout { display: flex; height: 100vh; overflow: hidden; }
+
+    /* ── Sidebar ───────────────────────────────────── */
+    .sidebar {
+      width: var(--sidebar-w);
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-base);
+      border-right: 1px solid var(--border-faint);
+      position: relative;
+      z-index: 10;
+    }
+
+    .sidebar::after {
+      content: '';
+      position: absolute;
+      top: 0; right: -1px;
+      width: 1px; height: 100%;
+      background: linear-gradient(to bottom, transparent, var(--teal), transparent);
+      opacity: 0.3;
+    }
+
+    .sidebar-logo {
+      padding: 28px 24px 24px;
+      border-bottom: 1px solid var(--border-faint);
+    }
+
+    .logo-lockup {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--teal), var(--teal-dark));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      box-shadow: 0 0 20px var(--teal-glow);
+    }
+
+    .logo-icon svg { display: block; }
+
+    .logo-wordmark {
+      display: flex;
+      flex-direction: column;
+      line-height: 1;
+    }
+
+    .logo-name {
+      font-family: var(--font-display);
+      font-size: 18px;
+      letter-spacing: 0.08em;
+      color: var(--text-hi);
+    }
+
+    .logo-sub {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 400;
+      color: var(--text-teal);
+      letter-spacing: 0.12em;
+      margin-top: 3px;
+      opacity: 0.8;
+    }
+
+    .nav { padding: 20px 16px; flex: 1; }
+
+    .nav-section-label {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--text-lo);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      padding: 0 8px;
+      margin-bottom: 8px;
+      margin-top: 24px;
+    }
+
+    .nav-section-label:first-child { margin-top: 0; }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 12px;
+      margin-bottom: 2px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.18s var(--ease);
+      color: var(--text-mid);
+      font-size: 13px;
+      font-weight: 400;
+      position: relative;
+      user-select: none;
+    }
+
+    .nav-item:hover {
+      background: var(--bg-hover);
+      color: var(--text-hi);
+    }
+
+    .nav-item.active {
+      background: var(--teal-dim);
+      color: var(--teal);
+      font-weight: 500;
+    }
+
+    .nav-item.active::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 25%; height: 50%;
+      width: 2px;
+      background: var(--teal);
+      border-radius: 0 2px 2px 0;
+      box-shadow: 0 0 8px var(--teal-glow);
+    }
+
+    .nav-icon {
+      width: 18px; height: 18px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      opacity: 0.7;
+      transition: opacity 0.18s;
+    }
+
+    .nav-item.active .nav-icon,
+    .nav-item:hover .nav-icon { opacity: 1; }
+
+    .sidebar-footer {
+      padding: 16px;
+      border-top: 1px solid var(--border-faint);
+    }
+
+    .system-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--bg-surface);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-faint);
+    }
+
+    .status-dot-wrap { position: relative; }
+
+    .status-dot-live {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      display: block;
+    }
+
+    .status-dot-live.offline { background: var(--rose); }
+
+    .status-dot-live::after {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      border: 1px solid var(--green);
+      animation: sonar 2s ease-out infinite;
+    }
+
+    .status-dot-live.offline::after { border-color: var(--rose); animation: none; }
+
+    @keyframes sonar {
+      0%   { transform: scale(1); opacity: 0.8; }
+      100% { transform: scale(2.5); opacity: 0; }
+    }
+
+    .status-info { flex: 1; min-width: 0; }
+
+    .status-label-main {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-hi);
+    }
+
+    .status-label-sub {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-lo);
+      margin-top: 1px;
+    }
+
+    /* ── Premium Theme Toggle (Top Right) ─────────────────── */
+    .theme-toggle-premium {
+      position: relative;
+      width: 56px;
+      height: 28px;
+      border-radius: 40px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 6px;
+      transition: all 0.3s var(--spring);
+      overflow: hidden;
+    }
+
+    .theme-toggle-premium:hover {
+      border-color: var(--teal);
+      box-shadow: 0 0 8px var(--teal-glow);
+    }
+
+    .theme-icon {
+      font-size: 12px;
+      z-index: 2;
+      transition: transform 0.3s var(--spring);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+    }
+
+    .theme-toggle-slider {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 22px;
+      height: 22px;
+      background: var(--teal);
+      border-radius: 50%;
+      transition: transform 0.3s var(--spring);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+
+    [data-theme="dark"] .theme-toggle-slider {
+      transform: translateX(28px);
+    }
+
+    /* ── Main ──────────────────────────────────────── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-void);
+    }
+
+    /* ── Top bar ───────────────────────────────────── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 36px;
+      height: 64px;
+      border-bottom: 1px solid var(--border-faint);
+      background: var(--bg-void);
+      backdrop-filter: blur(12px);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 5;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+
+    .page-title {
+      font-family: var(--font-display);
+      font-size: 26px;
+      letter-spacing: 0.06em;
+      color: var(--text-hi);
+    }
+
+    .page-breadcrumb {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-lo);
+      letter-spacing: 0.08em;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .topbar-chip {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 12px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 99px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-mid);
+      letter-spacing: 0.04em;
+    }
+
+    .topbar-chip strong {
+      color: var(--text-hi);
+      font-weight: 500;
+    }
+
+    /* ── Page content ──────────────────────────────── */
+    .pages { flex: 1; overflow-y: auto; }
+
+    .page { display: none; padding: 32px 36px 48px; animation: pageIn 0.3s var(--spring) both; }
+    .page.active { display: block; }
+
+    @keyframes pageIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Stats grid ────────────────────────────────── */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .kpi-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 22px 24px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s var(--ease), transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+      cursor: default;
+    }
+
+    .kpi-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--accent-color, var(--teal)), transparent);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .kpi-card:hover {
+      border-color: var(--border-mid);
+      transform: translateY(-3px);
+      box-shadow: 0 16px 40px rgba(0,0,0,0.1);
+    }
+
+    .kpi-card:hover::before { opacity: 1; }
+
+    .kpi-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .kpi-icon {
+      width: 40px; height: 40px;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--icon-bg);
+    }
+
+    .kpi-badge {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--accent-color, var(--teal));
+      background: rgba(0,212,180,0.1);
+      border: 1px solid rgba(0,212,180,0.2);
+      border-radius: 99px;
+      padding: 2px 7px;
+      letter-spacing: 0.06em;
+    }
+
+    .kpi-value {
+      font-family: var(--font-display);
+      font-size: 44px;
+      letter-spacing: -0.01em;
+      line-height: 1;
+      color: var(--text-hi);
+      margin-bottom: 6px;
+    }
+
+    .kpi-label {
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--text-lo);
+      letter-spacing: 0.03em;
+    }
+
+    /* ── Charts row ────────────────────────────────── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px 0;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-family: var(--font-display);
+      font-size: 16px;
+      letter-spacing: 0.06em;
+      color: var(--text-hi);
+    }
+
+    .card-subtitle {
+      font-size: 11px;
+      color: var(--text-lo);
+      margin-top: 2px;
+      font-family: var(--font-mono);
+    }
+
+    .card-body { padding: 0 24px 24px; }
+
+    .card-tag {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-lo);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-faint);
+      border-radius: 6px;
+      padding: 3px 8px;
+      letter-spacing: 0.06em;
+    }
+
+    /* ── Recent employees in dashboard ────────────── */
+    .emp-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border-faint);
+      transition: background 0.15s;
+    }
+
+    .emp-row:last-child { border-bottom: none; }
+
+    .emp-row:hover { background: var(--bg-hover); margin: 0 -24px; padding: 12px 24px; border-radius: var(--radius-sm); }
+
+    .emp-avatar {
+      width: 34px; height: 34px;
+      border-radius: 10px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border-subtle);
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--font-display);
+      font-size: 14px;
+      color: var(--teal);
+      flex-shrink: 0;
+      margin-right: 12px;
+    }
+
+    .emp-info { flex: 1; min-width: 0; }
+
+    .emp-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-hi);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .emp-phone {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-lo);
+      margin-top: 2px;
+    }
+
+    .emp-meta { text-align: right; flex-shrink: 0; margin-left: 16px; }
+
+    .emp-hours {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-hi);
+    }
+
+    .emp-screenshots {
+      font-size: 10px;
+      color: var(--text-lo);
+      margin-top: 2px;
+    }
+
+    /* ── Search ────────────────────────────────────── */
+    .search-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .search-wrap {
+      flex: 1;
+      position: relative;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 14px; top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-lo);
+      pointer-events: none;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 12px 14px 12px 40px;
+      font-family: var(--font-body);
+      font-size: 13px;
+      color: var(--text-hi);
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .search-input::placeholder { color: var(--text-lo); }
+
+    .search-input:focus {
+      border-color: var(--teal);
+      box-shadow: 0 0 0 3px var(--teal-dim);
+    }
+
+    /* ── Table ─────────────────────────────────────── */
+    .table-wrap {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .data-table thead { background: var(--bg-surface); }
+
+    .data-table th {
+      text-align: left;
+      padding: 13px 20px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-lo);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border-faint);
+      white-space: nowrap;
+    }
+
+    .data-table td {
+      padding: 15px 20px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border-faint);
+      vertical-align: middle;
+    }
+
+    .data-table tbody tr:last-child td { border-bottom: none; }
+
+    .data-table tbody tr {
+      transition: background 0.15s;
+    }
+
+    .data-table tbody tr:hover {
+      background: var(--bg-hover);
+      cursor: pointer;
+    }
+
+    /* ── Status badges ─────────────────────────────── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 99px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+    }
+
+    .badge-green {
+      background: var(--green-dim);
+      color: var(--green);
+      border: 1px solid rgba(16,185,129,0.2);
+    }
+
+    .badge-red {
+      background: var(--rose-dim);
+      color: var(--rose);
+      border: 1px solid rgba(239,68,68,0.2);
+    }
+
+    .badge-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .badge-dot.pulse { animation: dotPulse 2s ease-in-out infinite; }
+
+    @keyframes dotPulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    /* ── Action buttons ────────────────────────────── */
+    .btn-row { display: flex; gap: 6px; }
+
+    .btn {
+      padding: 6px 12px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.15s var(--ease);
+      text-transform: uppercase;
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-mid);
+    }
+
+    .btn-ghost:hover {
+      background: var(--bg-raised);
+      color: var(--text-hi);
+      border-color: var(--border-mid);
+    }
+
+    .btn-teal {
+      background: var(--teal-dim);
+      color: var(--teal);
+      border-color: var(--border-teal);
+    }
+
+    .btn-teal:hover {
+      background: rgba(0,212,180,0.2);
+      box-shadow: 0 0 12px var(--teal-dim);
+    }
+
+    /* ── Cell helpers ──────────────────────────────── */
+    .cell-primary {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-hi);
+    }
+
+    .cell-secondary {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-lo);
+      margin-top: 2px;
+    }
+
+    .cell-mono {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-mid);
+    }
+
+    .cell-hi { color: var(--text-hi); font-weight: 500; }
+
+    /* ── Modal ─────────────────────────────────────── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(6px);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border-mid);
+      border-radius: var(--radius-lg);
+      width: 100%;
+      max-width: 960px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      animation: modalIn 0.28s var(--spring) both;
+      box-shadow: 0 40px 80px rgba(0,0,0,0.2), 0 0 0 1px var(--border-faint);
+    }
+
+    @keyframes modalIn {
+      from { opacity: 0; transform: scale(0.96) translateY(12px); }
+      to   { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 28px;
+      border-bottom: 1px solid var(--border-faint);
+      flex-shrink: 0;
+    }
+
+    .modal-title {
+      font-family: var(--font-display);
+      font-size: 20px;
+      letter-spacing: 0.06em;
+      color: var(--text-hi);
+    }
+
+    .modal-close-btn {
+      width: 32px; height: 32px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-mid);
+      transition: all 0.15s;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .modal-close-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-hi);
+      border-color: var(--border-mid);
+    }
+
+    .modal-body {
+      overflow-y: auto;
+      padding: 28px;
+      flex: 1;
+    }
+
+    /* ── Stats row in modal ────────────────────────── */
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .stat-box {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-faint);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      text-align: center;
+    }
+
+    .stat-box-val {
+      font-family: var(--font-display);
+      font-size: 28px;
+      letter-spacing: -0.01em;
+      color: var(--text-hi);
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .stat-box-label {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-lo);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    /* ── Active session strip ──────────────────────── */
+    .session-active-strip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--green-dim);
+      border: 1px solid rgba(16,185,129,0.2);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      color: var(--green);
+      font-family: var(--font-mono);
+    }
+
+    /* ── Tabs ──────────────────────────────────────── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-faint);
+      border-radius: var(--radius-md);
+      padding: 4px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 9px 16px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      color: var(--text-lo);
+      background: transparent;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.18s var(--ease);
+      text-transform: uppercase;
+    }
+
+    .tab-btn:hover { color: var(--text-mid); }
+
+    .tab-btn.active {
+      background: var(--bg-raised);
+      color: var(--teal);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Session items ─────────────────────────────── */
+    .session-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-faint);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      margin-bottom: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .session-date {
+      font-family: var(--font-display);
+      font-size: 14px;
+      letter-spacing: 0.06em;
+      color: var(--text-hi);
+      margin-bottom: 6px;
+    }
+
+    .session-meta {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-lo);
+      line-height: 1.8;
+    }
+
+    /* ── Screenshot gallery ────────────────────────── */
+    .ss-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 14px;
+    }
+
+    .ss-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.2s var(--ease);
+    }
+
+    .ss-card:hover {
+      border-color: var(--border-teal);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 28px rgba(0,0,0,0.2), 0 0 20px var(--teal-dim);
+    }
+
+    .ss-card img {
+      width: 100%;
+      height: 160px;
+      object-fit: cover;
+      display: block;
+      background: var(--bg-raised);
+    }
+
+    .ss-meta {
+      padding: 10px 12px;
+      border-top: 1px solid var(--border-faint);
+    }
+
+    .ss-time {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-mid);
+    }
+
+    .ss-sub {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-lo);
+      margin-top: 2px;
+    }
+
+    /* ── Fullscreen viewer ─────────────────────────── */
+    .viewer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.97);
+      z-index: 500;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+    }
+
+    .viewer-overlay.open { display: flex; }
+
+    .viewer-img {
+      max-width: 88vw;
+      max-height: 80vh;
+      border-radius: var(--radius-md);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.8);
+      object-fit: contain;
+    }
+
+    .viewer-controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .viewer-btn {
+      padding: 10px 24px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border-mid);
+      border-radius: var(--radius-md);
+      color: var(--text-hi);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .viewer-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--teal);
+      color: var(--teal);
+    }
+
+    .viewer-count {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-lo);
+      min-width: 80px;
+      text-align: center;
+    }
+
+    .viewer-close-btn {
+      position: absolute;
+      top: 20px; right: 20px;
+      padding: 8px 16px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: var(--text-mid);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      cursor: pointer;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      transition: all 0.15s;
+    }
+
+    .viewer-close-btn:hover { color: var(--text-hi); border-color: var(--border-mid); }
+
+    /* ── Loading / Empty ───────────────────────────── */
+    .state-msg {
+      text-align: center;
+      padding: 60px 24px;
+      color: var(--text-lo);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+    }
+
+    .state-msg .icon {
+      font-size: 32px;
+      margin-bottom: 14px;
+      display: block;
+      opacity: 0.4;
+    }
+
+    .error-strip {
+      background: var(--rose-dim);
+      border: 1px solid rgba(239,68,68,0.2);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--rose);
+      margin-bottom: 20px;
+    }
+
+    /* ── Reports ───────────────────────────────────── */
+    .reports-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 16px;
+    }
+
+    /* ── Responsive ────────────────────────────────── */
+    @media (max-width: 1280px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+      .charts-row { grid-template-columns: 1fr; }
+      .reports-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 900px) {
+      :root { --sidebar-w: 68px; }
+      .logo-wordmark, .nav-item span:not(.nav-icon), .sidebar-footer .status-info, .nav-section-label { display: none; }
+      .nav-item { justify-content: center; }
+      .topbar { padding: 0 20px; }
+      .page { padding: 24px 20px; }
+      .stat-row { grid-template-columns: repeat(2,1fr); }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- ── SIDEBAR ───────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-lockup">
+        <div class="logo-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <circle cx="10" cy="10" r="4" stroke="white" stroke-width="1.5"/>
+            <path d="M10 3V1.5M10 18.5V17M3 10H1.5M18.5 10H17M4.9 4.9L3.8 3.8M16.2 16.2l-1.1-1.1M4.9 15.1l-1.1 1.1M16.2 3.8l-1.1 1.1" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="logo-wordmark">
+          <span class="logo-name">WORKTRACK</span>
+          <span class="logo-sub">ADMIN CONSOLE</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-section-label">Overview</div>
+      <div class="nav-item active" data-page="dashboard">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="1" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="9" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.3"/></svg>
+        </span>
+        <span>Dashboard</span>
+      </div>
+
+      <div class="nav-section-label">Management</div>
+      <div class="nav-item" data-page="employees">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6" cy="5" r="3" stroke="currentColor" stroke-width="1.3"/><path d="M1 13.5c0-2.485 2.239-4.5 5-4.5s5 2.015 5 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="12.5" cy="4.5" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M14.5 10.5c.94.435 1.5 1.264 1.5 2.25" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        </span>
+        <span>Employees</span>
+      </div>
+      <div class="nav-item" data-page="reports">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 12L5.5 8l3 3L13 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 5h2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span>Reports</span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="system-status">
+        <div class="status-dot-wrap">
+          <span class="status-dot-live" id="sidebarDot"></span>
+        </div>
+        <div class="status-info">
+          <div class="status-label-main" id="sidebarStatusLabel">Connecting…</div>
+          <div class="status-label-sub" id="sidebarStatusSub">API endpoint</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── MAIN ──────────────────────────────────────── -->
+  <div class="main">
+
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <span class="page-title" id="pageTitle">DASHBOARD</span>
+        <span class="page-breadcrumb" id="pageBreadcrumb">/ OVERVIEW</span>
+      </div>
+      <div class="topbar-right">
+        <div class="topbar-chip">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1"/><path d="M5 3v2.5l1.5 1.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+          Updated <strong id="lastUpdated">—</strong>
+        </div>
+        <div class="topbar-chip" id="apiChip">
+          <span id="apiDot" style="width:6px;height:6px;border-radius:50%;background:var(--text-lo);display:inline-block"></span>
+          <strong id="apiStatusLabel">Checking</strong>
+        </div>
+        <!-- Premium Theme Toggle -->
+        <div class="theme-toggle-premium" id="premiumThemeToggle">
+          <span class="theme-icon">☀️</span>
+          <span class="theme-icon">🌙</span>
+          <div class="theme-toggle-slider"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pages -->
+    <div class="pages">
+
+      <!-- ═══ DASHBOARD ════════════════════════════ -->
+      <div class="page active" id="dashboardPage">
+
+        <!-- KPIs -->
+        <div class="kpi-grid">
+          <div class="kpi-card" style="--accent-color: var(--teal); --icon-bg: var(--teal-dim);">
+            <div class="kpi-header">
+              <div class="kpi-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="8" cy="7" r="3.5" stroke="var(--teal)" stroke-width="1.5"/><path d="M2 17c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="var(--teal)" stroke-width="1.5" stroke-linecap="round"/><circle cx="15" cy="6" r="2.5" stroke="var(--teal)" stroke-width="1.3"/><path d="M17.5 13c1 .5 1.7 1.5 1.7 2.7" stroke="var(--teal)" stroke-width="1.3" stroke-linecap="round"/></svg>
+              </div>
+              <span class="kpi-badge">TOTAL</span>
+            </div>
+            <div class="kpi-value" id="totalEmployees">—</div>
+            <div class="kpi-label">Employees registered</div>
+          </div>
+
+          <div class="kpi-card" style="--accent-color: var(--green); --icon-bg: var(--green-dim);">
+            <div class="kpi-header">
+              <div class="kpi-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="3" fill="var(--green)" opacity="0.5"/><circle cx="10" cy="10" r="6" stroke="var(--green)" stroke-width="1.5" opacity="0.4"/><circle cx="10" cy="10" r="1.5" fill="var(--green)"/></svg>
+              </div>
+              <span class="kpi-badge" style="color:var(--green);background:var(--green-dim);border-color:rgba(16,185,129,0.2)">LIVE</span>
+            </div>
+            <div class="kpi-value" id="activeEmployees">—</div>
+            <div class="kpi-label">Active right now</div>
+          </div>
+
+          <div class="kpi-card" style="--accent-color: var(--amber); --icon-bg: var(--amber-dim);">
+            <div class="kpi-header">
+              <div class="kpi-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="var(--amber)" stroke-width="1.5"/><path d="M10 6v4.5l3 2" stroke="var(--amber)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+              <span class="kpi-badge" style="color:var(--amber);background:var(--amber-dim);border-color:rgba(245,158,11,0.2)">TODAY</span>
+            </div>
+            <div class="kpi-value" id="totalHours">—</div>
+            <div class="kpi-label">Hours worked today</div>
+          </div>
+
+          <div class="kpi-card" style="--accent-color: var(--violet); --icon-bg: var(--violet-dim);">
+            <div class="kpi-header">
+              <div class="kpi-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="4" width="16" height="12" rx="2" stroke="var(--violet)" stroke-width="1.5"/><circle cx="7" cy="10" r="2" stroke="var(--violet)" stroke-width="1.3"/><path d="M11.5 8h4M11.5 11h4" stroke="var(--violet)" stroke-width="1.3" stroke-linecap="round"/></svg>
+              </div>
+              <span class="kpi-badge" style="color:var(--violet);background:var(--violet-dim);border-color:rgba(139,92,246,0.2)">ALL TIME</span>
+            </div>
+            <div class="kpi-value" id="totalScreenshots">—</div>
+            <div class="kpi-label">Screenshots captured</div>
+          </div>
+        </div>
+
+        <!-- Charts row -->
+        <div class="charts-row">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">TOP PERFORMERS</div>
+                <div class="card-subtitle">By total hours worked</div>
+              </div>
+              <span class="card-tag">ALL TIME</span>
+            </div>
+            <div class="card-body">
+              <canvas id="activityChart" height="90"></canvas>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">RECENT TEAM</div>
+                <div class="card-subtitle">Last 5 registered</div>
+              </div>
+            </div>
+            <div class="card-body" id="recentList">
+              <div class="state-msg"><span class="icon">⏳</span>Loading…</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ═══ EMPLOYEES ════════════════════════════ -->
+      <div class="page" id="employeesPage">
+        <div class="search-row">
+          <div class="search-wrap">
+            <span class="search-icon">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            </span>
+            <input class="search-input" type="text" id="searchInput" placeholder="Search by name or phone…">
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>Status</th>
+                <th>Today</th>
+                <th>Total</th>
+                <th>Captures</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="employeesBody">
+              <tr><td colspan="6"><div class="state-msg"><span class="icon">⏳</span>Fetching employees…</div></td></tr>
+            </tbody>
+          保持
+        </div>
+      </div>
+
+      <!-- ═══ REPORTS ══════════════════════════════ -->
+      <div class="page" id="reportsPage">
+        <div class="reports-grid">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">HOURS DISTRIBUTION</div>
+                <div class="card-subtitle">Workforce breakdown by total hours</div>
+              </div>
+              <span class="card-tag">SNAPSHOT</span>
+            </div>
+            <div class="card-body">
+              <canvas id="monthlyChart" height="120"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">WORKFORCE SUMMARY</div>
+                <div class="card-subtitle">Key metrics at a glance</div>
+              </div>
+            </div>
+            <div class="card-body" id="reportsSummary">
+              <div class="state-msg"><span class="icon">📊</span>Loading…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /pages -->
+  </div><!-- /main -->
+</div><!-- /layout -->
+
+<!-- ── EMPLOYEE MODAL ─────────────────────────────── -->
+<div class="modal-overlay" id="empModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span class="modal-title" id="modalTitle">Employee</span>
+      <button class="modal-close-btn" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody">
+      <div class="state-msg"><span class="icon">⏳</span>Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── VIEWER ─────────────────────────────────────── -->
+<div class="viewer-overlay" id="viewerOverlay">
+  <button class="viewer-close-btn" onclick="closeViewer()">✕ CLOSE</button>
+  <img class="viewer-img" id="viewerImg" src="" alt="">
+  <div class="viewer-controls">
+    <button class="viewer-btn" onclick="prevShot()">◀ PREV</button>
+    <span class="viewer-count" id="viewerCount">1 / 1</span>
+    <button class="viewer-btn" onclick="nextShot()">NEXT ▶</button>
+  </div>
+</div>
+
+<script>
+const API = 'http://127.0.0.1:3000/api';
+let allEmployees = [];
+let actChart = null, monthChart = null;
+let currentPage = 'dashboard';
+let shots = [], shotIdx = 0;
+
+// Theme handling with premium toggle
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('worktrack-theme', theme);
+  // Refresh charts to match new theme
+  setTimeout(() => {
+    if (actChart) {
+      buildActivityChart(allEmployees);
+    }
+    if (monthChart) {
+      loadReports();
+    }
+  }, 100);
+}
+
+function initTheme() {
+  const saved = localStorage.getItem('worktrack-theme');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefersDark ? 'dark' : 'light');
+  setTheme(theme);
+}
+
+// Premium theme toggle handler
+const themeToggle = document.getElementById('premiumThemeToggle');
+if (themeToggle) {
+  themeToggle.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme') || 'light';
+    const newTheme = current === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+  });
+}
+
+/* ── Boot ──────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+  initTheme();
+  setupNav();
+  loadDashboard();
+  setupSearch();
+  setInterval(() => {
+    if (currentPage === 'dashboard') loadDashboard();
+    else if (currentPage === 'employees') loadEmployees();
+  }, 30000);
+});
+
+/* ── Navigation ────────────────────────────────────────── */
+function setupNav() {
+  document.querySelectorAll('.nav-item[data-page]').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      item.classList.add('active');
+      const pg = item.dataset.page;
+      currentPage = pg;
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      document.getElementById(pg + 'Page').classList.add('active');
+      const titles = { dashboard: ['DASHBOARD','/ OVERVIEW'], employees: ['EMPLOYEES','/ DIRECTORY'], reports: ['REPORTS','/ ANALYTICS'] };
+      document.getElementById('pageTitle').textContent = titles[pg][0];
+      document.getElementById('pageBreadcrumb').textContent = titles[pg][1];
+      if (pg === 'dashboard') loadDashboard();
+      else if (pg === 'employees') loadEmployees();
+      else loadReports();
+    });
+  });
+}
+
+/* ── API helper ────────────────────────────────────────── */
+async function api(endpoint) {
+  const r = await fetch(API + endpoint);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+function setApiStatus(online) {
+  const dot = document.getElementById('apiDot');
+  const label = document.getElementById('apiStatusLabel');
+  const sdot = document.getElementById('sidebarDot');
+  const slabel = document.getElementById('sidebarStatusLabel');
+  const ssub = document.getElementById('sidebarStatusSub');
+  if (online) {
+    dot.style.background = 'var(--green)';
+    label.textContent = 'Online';
+    sdot.classList.remove('offline');
+    slabel.textContent = 'API Online';
+    ssub.textContent = '127.0.0.1:3000';
+  } else {
+    dot.style.background = 'var(--rose)';
+    label.textContent = 'Offline';
+    sdot.classList.add('offline');
+    slabel.textContent = 'API Offline';
+    ssub.textContent = 'Cannot reach server';
+  }
+}
+
+function tick() {
+  document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+/* ── Dashboard ─────────────────────────────────────────── */
+async function loadDashboard() {
+  try {
+    const data = await api('/admin/users');
+    allEmployees = data.users || [];
+    setApiStatus(true);
+    tick();
+
+    const active = allEmployees.filter(e => e.hasActiveSession).length;
+    const hrs = allEmployees.reduce((s, e) => s + (e.todayHours || 0), 0);
+    const caps = allEmployees.reduce((s, e) => s + (e.screenshotCount || 0), 0);
+
+    animVal('totalEmployees', allEmployees.length);
+    animVal('activeEmployees', active);
+    document.getElementById('totalHours').textContent = hrs.toFixed(1);
+    animVal('totalScreenshots', caps);
+
+    buildActivityChart(allEmployees);
+    buildRecentList(allEmployees);
+  } catch {
+    setApiStatus(false);
+  }
+}
+
+function animVal(id, target) {
+  const el = document.getElementById(id);
+  const start = parseInt(el.textContent) || 0;
+  const dur = 600;
+  const t0 = performance.now();
+  const fn = now => {
+    const p = Math.min((now - t0) / dur, 1);
+    el.textContent = Math.round(start + (target - start) * (p < 1 ? 1 - Math.pow(1 - p, 3) : 1));
+    if (p < 1) requestAnimationFrame(fn);
+  };
+  requestAnimationFrame(fn);
+}
+
+function buildActivityChart(emps) {
+  const ctx = document.getElementById('activityChart').getContext('2d');
+  if (actChart) actChart.destroy();
+  const top = [...emps].sort((a,b) => (b.totalWorkingHours||0)-(a.totalWorkingHours||0)).slice(0,6);
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  actChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: top.map(e => (e.name || e.phone).substring(0,14)),
+      datasets: [{
+        label: 'Hours',
+        data: top.map(e => e.totalWorkingHours || 0),
+        backgroundColor: isDark ? 'rgba(0,212,180,0.15)' : 'rgba(0,212,180,0.1)',
+        borderColor: 'rgba(0,212,180,0.8)',
+        borderWidth: 1.5,
+        borderRadius: 6,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: isDark ? '#1a2030' : '#ffffff',
+          borderColor: 'rgba(0,212,180,0.3)',
+          borderWidth: 1,
+          titleColor: isDark ? '#F0EDE6' : '#0F172A',
+          bodyColor: isDark ? '#8B93A7' : '#475569',
+          titleFont: { family: "'DM Mono', monospace", size: 11 },
+          bodyFont: { family: "'DM Mono', monospace", size: 11 },
+          callbacks: { label: ctx => ` ${ctx.parsed.y.toFixed(1)} hrs` }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)', drawBorder: false },
+          ticks: { color: isDark ? '#4A5168' : '#94A3B8', font: { family: "'DM Mono', monospace", size: 10 } },
+          border: { display: false }
+        },
+        y: {
+          grid: { color: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)', drawBorder: false },
+          ticks: { color: isDark ? '#4A5168' : '#94A3B8', font: { family: "'DM Mono', monospace", size: 10 }, callback: v => v + 'h' },
+          border: { display: false }
+        }
+      }
+    }
+  });
+}
+
+function buildRecentList(emps) {
+  const el = document.getElementById('recentList');
+  if (!emps.length) { el.innerHTML = '<div class="state-msg"><span class="icon">👤</span>No employees yet.</div>'; return; }
+  el.innerHTML = emps.slice(0,5).map(e => {
+    const initials = (e.name || e.phone).substring(0,2).toUpperCase();
+    return `
+      <div class="emp-row">
+        <div class="emp-avatar">${initials}</div>
+        <div class="emp-info">
+          <div class="emp-name">${esc(e.name || e.phone)}</div>
+          <div class="emp-phone">${e.phone}</div>
+        </div>
+        <div class="emp-meta">
+          <div class="emp-hours">${(e.todayHours||0).toFixed(1)}h</div>
+          <div class="emp-screenshots">${e.screenshotCount||0} caps</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+/* ── Employees ─────────────────────────────────────────── */
+async function loadEmployees() {
+  try {
+    const data = await api('/admin/users');
+    allEmployees = data.users || [];
+    renderTable(allEmployees);
+  } catch {
+    document.getElementById('employeesBody').innerHTML =
+      '<table><td colspan="6"><div class="error-strip">Failed to load employee data.</div></td></tr>';
+  }
+}
+
+function renderTable(emps) {
+  const q = document.getElementById('searchInput')?.value.toLowerCase() || '';
+  const filtered = q ? emps.filter(e => (e.name||'').toLowerCase().includes(q) || (e.phone||'').includes(q)) : emps;
+  const tbody = document.getElementById('employeesBody');
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="6"><div class="state-msg"><span class="icon">🔍</span>No matches found.</div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(e => `
+    <tr>
+      <td>
+        <div class="cell-primary">${esc(e.name || e.phone)}</div>
+        <div class="cell-secondary">${e.phone}</div>
+       </td>
+      <td>
+        <span class="badge ${e.hasActiveSession ? 'badge-green' : 'badge-red'}">
+          <span class="badge-dot ${e.hasActiveSession ? 'pulse' : ''}"></span>
+          ${e.hasActiveSession ? 'Active' : 'Offline'}
+        </span>
+       </td>
+      <td><span class="cell-mono cell-hi">${(e.todayHours||0).toFixed(1)}h</span></td>
+      <td><span class="cell-mono">${(e.totalWorkingHours||0).toFixed(1)}h</span></td>
+      <td><span class="cell-mono">${e.screenshotCount||0}</span></td>
+      <td>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="showDetails('${e.phone}')">Details</button>
+          <button class="btn btn-teal" onclick="showShots('${e.phone}','${esc(e.name||e.phone)}')">Captures</button>
+        </div>
+       </td>
+    </table>
+  `).join('');
+}
+
+function setupSearch() {
+  document.getElementById('searchInput').addEventListener('input', () => {
+    if (currentPage === 'employees') renderTable(allEmployees);
+  });
+}
+
+/* ── Employee Detail Modal ─────────────────────────────── */
+async function showDetails(phone) {
+  openModal('Loading…');
+  try {
+    const data = await api(`/admin/user/${phone}`);
+    const u = data.user;
+    const s = data.statistics;
+    document.getElementById('modalTitle').textContent = esc(u.name || u.phone);
+    document.getElementById('modalBody').innerHTML = `
+      <div class="stat-row">
+        <div class="stat-box"><div class="stat-box-val">${s.totalWorkingHours}</div><div class="stat-box-label">Total Hrs</div></div>
+        <div class="stat-box"><div class="stat-box-val">${s.todayWorkingHours}</div><div class="stat-box-label">Today Hrs</div></div>
+        <div class="stat-box"><div class="stat-box-val">${s.totalSessions}</div><div class="stat-box-label">Sessions</div></div>
+        <div class="stat-box"><div class="stat-box-val">${s.totalScreenshots}</div><div class="stat-box-label">Captures</div></div>
+      </div>
+      ${data.activeSession ? `
+        <div class="session-active-strip">
+          <span style="font-size:16px">●</span>
+          Currently active since ${new Date(data.activeSession.check_in_time).toLocaleString()} · ${data.activeSession.screenshot_count||0} captures this session
+        </div>
+      ` : ''}
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('sessions',this)">SESSION HISTORY</button>
+        <button class="tab-btn" onclick="switchTab('captures',this,'${phone}')">CAPTURES (${s.totalScreenshots})</button>
+      </div>
+      <div id="panelSessions" class="tab-panel active">
+        ${(data.sessions||[]).length ? data.sessions.map(s => `
+          <div class="session-card">
+            <div>
+              <div class="session-date">${new Date(s.checkInTime).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</div>
+              <div class="session-meta">
+                IN: ${new Date(s.checkInTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}<br>
+                ${s.checkOutTime ? `OUT: ${new Date(s.checkOutTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}<br>` : ''}
+                DURATION: ${s.durationHours}h · CAPTURES: ${s.screenshotCount}
+              </div>
+            </div>
+            <span class="badge ${s.status==='completed'?'badge-green':'badge-red'}">${s.status}</span>
+          </div>
+        `).join('') : '<div class="state-msg"><span class="icon">📋</span>No sessions yet.</div>'}
+      </div>
+      <div id="panelCaptures" class="tab-panel">
+        <div class="ss-grid" id="inModalGallery"><div class="state-msg"><span class="icon">📸</span>Loading captures…</div></div>
+      </div>
+    `;
+  } catch {
+    document.getElementById('modalBody').innerHTML = '<div class="error-strip">Failed to load employee details.</div>';
+  }
+}
+
+async function showShots(phone, name) {
+  openModal(`${name} — Captures`);
+  try {
+    const data = await api(`/user/${phone}/screenshots`);
+    shots = data.screenshots || [];
+    document.getElementById('modalBody').innerHTML = shots.length
+      ? `<div class="ss-grid">${shots.map((s,i) => `
+          <div class="ss-card" onclick="openViewer(${i})">
+            <img src="${s.url}" alt="Capture ${i+1}" loading="lazy" onerror="this.src='https://placehold.co/400x200/131720/4A5168?text=No+preview'">
+            <div class="ss-meta">
+              <div class="ss-time">${new Date(s.time).toLocaleString()}</div>
+              <div class="ss-sub">Session · #${s.sequence}</div>
+            </div>
+          </div>`).join('')}</div>`
+      : '<div class="state-msg"><span class="icon">📸</span>No captures for this employee.</div>';
+  } catch {
+    document.getElementById('modalBody').innerHTML = '<div class="error-strip">Failed to load captures.</div>';
+  }
+}
+
+function switchTab(name, btn, phone) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel' + name.charAt(0).toUpperCase() + name.slice(1)).classList.add('active');
+  if (name === 'captures' && phone) loadCapturesInModal(phone);
+}
+
+async function loadCapturesInModal(phone) {
+  const g = document.getElementById('inModalGallery');
+  try {
+    const data = await api(`/user/${phone}/screenshots`);
+    shots = data.screenshots || [];
+    g.innerHTML = shots.length
+      ? shots.map((s,i) => `
+        <div class="ss-card" onclick="openViewer(${i})">
+          <img src="${s.url}" alt="" loading="lazy" onerror="this.src='https://placehold.co/400x200/131720/4A5168?text=No+preview'">
+          <div class="ss-meta"><div class="ss-time">${new Date(s.time).toLocaleString()}</div></div>
+        </div>`).join('')
+      : '<div class="state-msg" style="grid-column:1/-1"><span class="icon">📸</span>No captures.</div>';
+  } catch {
+    g.innerHTML = '<div class="error-strip" style="grid-column:1/-1">Failed to load captures.</div>';
+  }
+}
+
+/* ── Reports ───────────────────────────────────────────── */
+async function loadReports() {
+  try {
+    const data = await api('/admin/users');
+    const emps = data.users || [];
+
+    const ctx = document.getElementById('monthlyChart').getContext('2d');
+    if (monthChart) monthChart.destroy();
+
+    const buckets = {'0–10h':0,'10–20h':0,'20–40h':0,'40+h':0};
+    emps.forEach(e => {
+      const h = e.totalWorkingHours||0;
+      if (h < 10) buckets['0–10h']++;
+      else if (h < 20) buckets['10–20h']++;
+      else if (h < 40) buckets['20–40h']++;
+      else buckets['40+h']++;
+    });
+
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    monthChart = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: Object.keys(buckets),
+        datasets: [{
+          data: Object.values(buckets),
+          backgroundColor: ['rgba(0,212,180,0.8)','rgba(245,158,11,0.8)','rgba(129,140,248,0.8)','rgba(244,63,94,0.8)'],
+          borderColor: [isDark ? '#0d0f12' : '#ffffff'],
+          borderWidth: 3,
+          hoverOffset: 8
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        cutout: '65%',
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: isDark ? '#8B93A7' : '#475569', font: { family: "'DM Mono', monospace", size: 11 }, padding: 16 }
+          },
+          tooltip: {
+            backgroundColor: isDark ? '#1a2030' : '#ffffff',
+            borderColor: 'rgba(0,212,180,0.3)',
+            borderWidth: 1,
+            titleColor: isDark ? '#F0EDE6' : '#0F172A',
+            bodyColor: isDark ? '#8B93A7' : '#475569',
+            titleFont: { family: "'DM Mono', monospace" },
+            bodyFont: { family: "'DM Mono', monospace" }
+          }
+        }
+      }
+    });
+
+    const active = emps.filter(e => e.hasActiveSession).length;
+    const totalH = emps.reduce((s,e) => s+(e.totalWorkingHours||0), 0);
+    const avgH = emps.length ? (totalH / emps.length).toFixed(1) : 0;
+    document.getElementById('reportsSummary').innerHTML = [
+      ['Total Employees', emps.length],
+      ['Active Now', active],
+      ['Total Hours Logged', totalH.toFixed(1) + 'h'],
+      ['Avg Hours / Employee', avgH + 'h'],
+      ['Total Captures', emps.reduce((s,e) => s+(e.screenshotCount||0),0)],
+    ].map(([l,v]) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:13px 0;border-bottom:1px solid var(--border-faint);">
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-lo);letter-spacing:.08em;text-transform:uppercase">${l}</span>
+        <span style="font-family:var(--font-display);font-size:22px;letter-spacing:.02em;color:var(--text-hi)">${v}</span>
+      </div>
+    `).join('') + `<div style="padding:13px 0;text-align:center;font-family:var(--font-mono);font-size:9px;color:var(--text-lo);letter-spacing:.1em">LIVE DATA · AUTO-REFRESH 30s</div>`;
+  } catch {
+    console.error('Reports failed');
+  }
+}
+
+/* ── Modal helpers ─────────────────────────────────────── */
+function openModal(title) {
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = '<div class="state-msg"><span class="icon">⏳</span>Loading…</div>';
+  document.getElementById('empModal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('empModal').classList.remove('open');
+  shots = [];
+}
+
+document.getElementById('empModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('empModal')) closeModal();
+});
+
+/* ── Viewer ────────────────────────────────────────────── */
+function openViewer(idx) {
+  shotIdx = idx;
+  renderViewer();
+  document.getElementById('viewerOverlay').classList.add('open');
+}
+
+function closeViewer() {
+  document.getElementById('viewerOverlay').classList.remove('open');
+}
+
+function renderViewer() {
+  document.getElementById('viewerImg').src = shots[shotIdx].url;
+  document.getElementById('viewerCount').textContent = `${shotIdx+1} / ${shots.length}`;
+}
+
+function prevShot() { shotIdx = (shotIdx - 1 + shots.length) % shots.length; renderViewer(); }
+function nextShot() { shotIdx = (shotIdx + 1) % shots.length; renderViewer(); }
+
+document.addEventListener('keydown', e => {
+  if (document.getElementById('viewerOverlay').classList.contains('open')) {
+    if (e.key === 'ArrowLeft') prevShot();
+    if (e.key === 'ArrowRight') nextShot();
+    if (e.key === 'Escape') closeViewer();
+  }
+  if (document.getElementById('empModal').classList.contains('open') && e.key === 'Escape') closeModal();
+});
+
+/* ── Utils ─────────────────────────────────────────────── */
+function esc(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>
+
+================================================================================
+FILE: main.js
+================================================================================
+
+const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const path = require('path');
+const Store = require('electron-store');
+const screenshotService = require('./screenshot-service');
+
+// Initialize electron store for user credentials
+const store = new Store({
+  name: 'user-preferences',
+  defaults: {
+    savedPhone: '',
+    savedName: ''
+  }
+});
+
+let overlayWindow = null;
+let checkInWindow = null;
+let isMonitoring = false;
+let currentPhone = null;
+let currentName = null;
+let currentSessionId = null;
+let screenshotSequence = 0;
+let heartbeatInterval = null;
+let nextScreenshotTimeout = null;
+let backendBaseUrl = 'http://127.0.0.1:3000'; // Make sure this matches your backend
+
+// Random interval between MIN and MAX seconds (from env or defaults)
+const MIN_INTERVAL_SECONDS = 60; // 1 minute
+const MAX_INTERVAL_SECONDS = 1800; // 30 minutes
+
+// Disable default menu
+Menu.setApplicationMenu(null);
+
+// Helper function to make API calls with error handling
+async function apiCall(endpoint, options = {}) {
+  const url = `${backendBaseUrl}${endpoint}`;
+  console.log(`🌐 API Call: ${options.method || 'GET'} ${url}`);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+      }
+    });
+    
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error(`❌ Non-JSON response from ${endpoint}:`, text.substring(0, 200));
+      throw new Error(`Server returned ${contentType || 'unknown content type'}. Expected JSON.`);
+    }
+    
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error(`❌ API call failed (${endpoint}):`, error.message);
+    throw error;
+  }
+}
+
+// Create the main check-in window
+function createCheckInWindow() {
+  checkInWindow = new BrowserWindow({
+    width: 520,
+    height: 620,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
+    },
+    resizable: false,
+    alwaysOnTop: true,
+    frame: true,
+    backgroundColor: '#0a0b0e',
+    titleBarStyle: 'hiddenInset'
+  });
+
+  // Load index.html from the frontend folder
+  checkInWindow.loadFile(path.join(__dirname, 'index.html'));
+  
+  checkInWindow.on('closed', () => {
+    checkInWindow = null;
+  });
+}
+
+// Create the overlay window with draggable support
+function createOverlayWindow() {
+  overlayWindow = new BrowserWindow({
+    width: 300,
+    height: 90,
+    x: 20,
+    y: 20,
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
+    },
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    movable: true,
+    resizable: false
+  });
+
+  // Load overlay.html from the frontend folder
+  overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
+  overlayWindow.setSkipTaskbar(true);
+  overlayWindow.setVisibleOnAllWorkspaces(true);
+  
+  // Make the window ignore mouse events on transparent areas
+  overlayWindow.setIgnoreMouseEvents(false);
+}
+
+// Get new presigned URL for each screenshot
+async function getNewPresignedUrl(sequence) {
+  console.log(`🔗 Requesting new presigned URL for screenshot #${sequence}`);
+  
+  const data = await apiCall('/api/upload-request', {
+    method: 'POST',
+    body: JSON.stringify({
+      phone: currentPhone,
+      sessionId: currentSessionId,
+      sequence: sequence,
+      userName: currentName
+    })
+  });
+  
+  if (data.success) {
+    console.log(`✅ Got presigned URL for screenshot #${sequence}`);
+    return data.presignedUrl;
+  } else {
+    throw new Error(data.error || 'Failed to get presigned URL');
+  }
+}
+
+// Upload screenshot to R2
+async function uploadScreenshot(screenshotBuffer, sequence) {
+  try {
+    const presignedUrl = await getNewPresignedUrl(sequence);
+    
+    const response = await fetch(presignedUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: screenshotBuffer
+    });
+    
+    if (response.ok) {
+      console.log(`✅ Screenshot #${sequence} uploaded successfully`);
+      return true;
+    } else {
+      const errorText = await response.text();
+      console.error(`❌ Upload failed for #${sequence}:`, response.status, errorText);
+      return false;
+    }
+  } catch (error) {
+    console.error(`❌ Upload error for #${sequence}:`, error);
+    return false;
+  }
+}
+
+// Send heartbeat to backend
+async function sendHeartbeat() {
+  if (!currentPhone || !currentSessionId) return;
+  
+  try {
+    await apiCall('/api/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({
+        phone: currentPhone,
+        sessionId: currentSessionId
+      })
+    });
+    console.log('💓 Heartbeat sent successfully');
+  } catch (error) {
+    console.error('⚠️ Heartbeat failed:', error);
+  }
+}
+
+// Get random interval for next screenshot and update overlay
+function getRandomScreenshotInterval() {
+  const minMs = MIN_INTERVAL_SECONDS * 1000;
+  const maxMs = MAX_INTERVAL_SECONDS * 1000;
+  const randomMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  const randomMinutes = (randomMs / 60000).toFixed(1);
+  
+  // Send update to overlay
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('next-screenshot', randomMinutes);
+  }
+  
+  console.log(`📸 Next screenshot in ${randomMinutes} minutes (${randomMs/1000} seconds)`);
+  return randomMs;
+}
+
+// Take and upload screenshot
+async function takeAndUploadScreenshot() {
+  if (!isMonitoring) return;
+  
+  screenshotSequence++;
+  console.log(`📸 Taking screenshot #${screenshotSequence}...`);
+  
+  const screenshot = await screenshotService.capture();
+  
+  if (screenshot) {
+    const jpegBuffer = await screenshotService.convertToJPEG(screenshot, 75);
+    const uploadSuccess = await uploadScreenshot(jpegBuffer, screenshotSequence);
+    
+    if (uploadSuccess && overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.webContents.send('screenshot-taken', `screenshot-${screenshotSequence}.jpg`);
+    }
+  }
+  
+  // Schedule next screenshot with random interval
+  if (isMonitoring) {
+    const nextInterval = getRandomScreenshotInterval();
+    nextScreenshotTimeout = setTimeout(takeAndUploadScreenshot, nextInterval);
+  }
+}
+
+// Start monitoring
+async function startMonitoring() {
+  if (isMonitoring) return;
+  
+  isMonitoring = true;
+  screenshotSequence = 0;
+  console.log('🟢 Monitoring started');
+  console.log(`⏱️ Screenshot interval: ${MIN_INTERVAL_SECONDS}-${MAX_INTERVAL_SECONDS} seconds`);
+  
+  // Send initial next screenshot time to overlay
+  const initialDelay = Math.floor(Math.random() * (90000 - 30000 + 1)) + 30000;
+  const initialMinutes = (initialDelay / 60000).toFixed(1);
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('next-screenshot', initialMinutes);
+  }
+  
+  // Send heartbeat every 5 minutes
+  heartbeatInterval = setInterval(() => {
+    sendHeartbeat();
+  }, 5 * 60 * 1000);
+  
+  // Start screenshot loop with random initial delay (between 30-90 seconds)
+  console.log(`⏰ First screenshot in ${(initialDelay/1000).toFixed(0)} seconds`);
+  
+  setTimeout(() => {
+    takeAndUploadScreenshot();
+  }, initialDelay);
+}
+
+// Stop monitoring
+function stopMonitoring() {
+  isMonitoring = false;
+  
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+  
+  if (nextScreenshotTimeout) {
+    clearTimeout(nextScreenshotTimeout);
+    nextScreenshotTimeout = null;
+  }
+  
+  console.log('🔴 Monitoring stopped');
+}
+
+// IPC handlers
+ipcMain.handle('save-credentials', async (event, phone, name) => {
+  store.set('savedPhone', phone);
+  store.set('savedName', name);
+  return { success: true };
+});
+
+ipcMain.handle('get-credentials', async () => {
+  return {
+    phone: store.get('savedPhone', ''),
+    name: store.get('savedName', '')
+  };
+});
+
+ipcMain.handle('check-in', async (event, phone, name) => {
+  console.log('📝 Check-in clicked for:', phone, name);
+  
+  currentPhone = phone;
+  currentName = name;
+  
+  // Save credentials
+  store.set('savedPhone', phone);
+  store.set('savedName', name);
+  
+  try {
+    // Call backend check-in
+    const data = await apiCall('/api/check-in', {
+      method: 'POST',
+      body: JSON.stringify({ phone: currentPhone, name: currentName })
+    });
+    
+    if (data.success) {
+      currentSessionId = data.sessionId;
+      
+      // Hide check-in window
+      if (checkInWindow && !checkInWindow.isDestroyed()) {
+        checkInWindow.hide();
+      }
+      
+      // Create and show overlay window
+      if (!overlayWindow || overlayWindow.isDestroyed()) {
+        createOverlayWindow();
+      }
+      
+      overlayWindow.show();
+      
+      // Start monitoring
+      startMonitoring();
+      
+      return { success: true, sessionId: currentSessionId, todayHours: data.todayHours };
+    } else {
+      return { success: false, error: data.error };
+    }
+  } catch (error) {
+    console.error('Check-in failed:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('check-out', async () => {
+  console.log('📝 Check-out clicked');
+  
+  try {
+    // Call backend check-out
+    if (currentPhone) {
+      await apiCall('/api/check-out', {
+        method: 'POST',
+        body: JSON.stringify({ phone: currentPhone })
+      });
+    }
+  } catch (error) {
+    console.error('Check-out API error:', error);
+  }
+  
+  stopMonitoring();
+  
+  // Hide overlay and show check-in window
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.hide();
+  }
+  
+  if (checkInWindow && !checkInWindow.isDestroyed()) {
+    checkInWindow.show();
+    checkInWindow.webContents.send('status-update', { status: 'checked-out' });
+  }
+  
+  currentSessionId = null;
+  screenshotSequence = 0;
+  
+  return { success: true };
+});
+
+ipcMain.handle('get-status', async () => {
+  if (!currentPhone) {
+    return { hasActiveSession: false };
+  }
+  
+  try {
+    const data = await apiCall(`/api/user/${currentPhone}/status`);
+    return data;
+  } catch (error) {
+    console.error('Status fetch error:', error);
+    return { hasActiveSession: false };
+  }
+});
+
+// Handle overlay position persistence (optional)
+ipcMain.handle('save-overlay-position', async (event, bounds) => {
+  store.set('overlayPosition', bounds);
+  return { success: true };
+});
+
+ipcMain.handle('get-overlay-position', async () => {
+  return store.get('overlayPosition', { x: 20, y: 20 });
+});
+
+// App lifecycle
+app.whenReady().then(() => {
+  createCheckInWindow();
+  createOverlayWindow();
+  
+  // Load saved overlay position if exists
+  const savedPosition = store.get('overlayPosition');
+  if (savedPosition && overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setPosition(savedPosition.x, savedPosition.y);
+  }
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+================================================================================
+FILE: forge.config.js
+================================================================================
+
+const { FusesPlugin } = require('@electron-forge/plugin-fuses');
+const { FuseV1Options, FuseVersion } = require('@electron/fuses');
+
+module.exports = {
+  packagerConfig: {
+    asar: true,
+  },
+  rebuildConfig: {},
+  makers: [
+    {
+      name: '@electron-forge/maker-squirrel',
+      config: {},
+    },
+    {
+      name: '@electron-forge/maker-zip',
+      platforms: ['darwin'],
+    },
+    {
+      name: '@electron-forge/maker-deb',
+      config: {},
+    },
+    {
+      name: '@electron-forge/maker-rpm',
+      config: {},
+    },
+  ],
+  plugins: [
+    {
+      name: '@electron-forge/plugin-auto-unpack-natives',
+      config: {},
+    },
+    // Fuses are used to enable/disable various Electron functionality
+    // at package time, before code signing the application
+    new FusesPlugin({
+      version: FuseVersion.V1,
+      [FuseV1Options.RunAsNode]: false,
+      [FuseV1Options.EnableCookieEncryption]: true,
+      [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+      [FuseV1Options.EnableNodeCliInspectArguments]: false,
+      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+      [FuseV1Options.OnlyLoadAppFromAsar]: true,
+    }),
+  ],
+};
+
+
+================================================================================
+FILE: Overlay.html
+================================================================================
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GridTrack — Active Session</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    body {
+      background: transparent;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+
+    /* Main container */
+    .overlay-container {
+      position: fixed;
+      bottom: 24px;
+      left: 24px;
+      pointer-events: none;
+    }
+
+    /* Premium pill card */
+    .premium-pill {
+      background: rgba(17, 19, 24, 0.85);
+      backdrop-filter: blur(20px);
+      border-radius: 60px;
+      border: 1px solid rgba(212, 168, 67, 0.25);
+      padding: 8px 8px 8px 24px;
+      pointer-events: auto;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.03);
+      transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+      cursor: grab;
+    }
+
+    .premium-pill:active {
+      cursor: grabbing;
+    }
+
+    .premium-pill:hover {
+      background: rgba(17, 19, 24, 0.95);
+      border-color: rgba(212, 168, 67, 0.4);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    /* Inner layout */
+    .pill-inner {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    /* Timer section */
+    .timer-block {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+
+    .timer-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: #9DA3B0;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      font-family: 'DM Mono', monospace;
+    }
+
+    .timer-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: #D4A843;
+      font-family: 'DM Mono', monospace;
+      letter-spacing: 0.02em;
+      line-height: 1;
+    }
+
+    .timer-unit {
+      font-size: 11px;
+      font-weight: 500;
+      color: #9DA3B0;
+      font-family: 'DM Mono', monospace;
+      margin-left: 2px;
+    }
+
+    /* Divider */
+    .divider-vertical {
+      width: 1px;
+      height: 32px;
+      background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.15), transparent);
+    }
+
+    /* Checkout button */
+    .checkout-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 20px;
+      background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+      border: none;
+      border-radius: 40px;
+      cursor: pointer;
+      transition: all 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+      box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+      font-family: 'Inter', sans-serif;
+      font-weight: 600;
+      font-size: 13px;
+      color: white;
+      letter-spacing: 0.02em;
+    }
+
+    .checkout-btn svg {
+      width: 14px;
+      height: 14px;
+      stroke: white;
+      stroke-width: 2;
+    }
+
+    .checkout-btn:hover {
+      transform: scale(1.02);
+      box-shadow: 0 4px 16px rgba(239, 68, 68, 0.5);
+      background: linear-gradient(135deg, #F43F5E 0%, #EF4444 100%);
+    }
+
+    .checkout-btn:active {
+      transform: scale(0.98);
+    }
+
+    /* Notifications */
+    .notification-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 10000;
+      pointer-events: none;
+    }
+
+    .notification {
+      background: rgba(17, 19, 24, 0.95);
+      backdrop-filter: blur(12px);
+      border-radius: 12px;
+      padding: 10px 18px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(212, 168, 67, 0.3);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      animation: slideInRight 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+      font-size: 12px;
+      color: #F0EDE6;
+      font-family: 'DM Mono', monospace;
+    }
+
+    @keyframes slideInRight {
+      from {
+        opacity: 0;
+        transform: translateX(100px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    /* Responsive */
+    @media (max-width: 500px) {
+      .overlay-container {
+        bottom: 16px;
+        left: 16px;
+      }
+      
+      .premium-pill {
+        padding: 6px 6px 6px 18px;
+      }
+      
+      .pill-inner {
+        gap: 12px;
+      }
+      
+      .timer-value {
+        font-size: 20px;
+      }
+      
+      .timer-label {
+        font-size: 9px;
+      }
+      
+      .checkout-btn {
+        padding: 6px 14px;
+        font-size: 11px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="overlay-container">
+    <div class="premium-pill" id="draggablePill">
+      <div class="pill-inner">
+        <!-- Timer -->
+        <div class="timer-block">
+          <span class="timer-label">SESSION</span>
+          <span class="timer-value" id="sessionTimer">00:00</span>
+        </div>
+        
+        <!-- Divider -->
+        <div class="divider-vertical"></div>
+        
+        <!-- Checkout Button -->
+        <button id="checkoutBtn" class="checkout-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M6 18L18 6M6 6l12 12" stroke="currentColor" stroke-linecap="round"/>
+          </svg>
+          Exit
+        </button>
+      </div>
+    </div>
+  </div>
+  
+  <div class="notification-container" id="notificationContainer"></div>
+
+  <script>
+    // Draggable functionality
+    const draggablePill = document.getElementById('draggablePill');
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    let startX = 0;
+    let startY = 0;
+    
+    draggablePill.addEventListener('mousedown', (e) => {
+      if (e.target === draggablePill || draggablePill.contains(e.target)) {
+        if (e.target.closest('#checkoutBtn')) return;
+        
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        
+        const rect = draggablePill.getBoundingClientRect();
+        dragOffsetX = rect.left;
+        dragOffsetY = rect.top;
+        
+        draggablePill.style.cursor = 'grabbing';
+        e.preventDefault();
+      }
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      
+      const deltaX = e.clientX - startX;
+      const deltaY = e.clientY - startY;
+      
+      let newLeft = dragOffsetX + deltaX;
+      let newTop = dragOffsetY + deltaY;
+      
+      // Keep within window bounds with margin
+      const maxX = window.innerWidth - draggablePill.offsetWidth - 16;
+      const maxY = window.innerHeight - draggablePill.offsetHeight - 16;
+      
+      newLeft = Math.max(16, Math.min(newLeft, maxX));
+      newTop = Math.max(16, Math.min(newTop, maxY));
+      
+      draggablePill.style.position = 'fixed';
+      draggablePill.style.bottom = 'auto';
+      draggablePill.style.left = newLeft + 'px';
+      draggablePill.style.top = newTop + 'px';
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+      draggablePill.style.cursor = 'grab';
+    });
+    
+    // ============ SESSION TIMER - FIXED VERSION ============
+    let sessionStartTime = null;
+    let sessionTimerInterval = null;
+    let isTimerRunning = false;
+    
+    function formatTime(seconds) {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const secs = seconds % 60;
+      
+      if (hours > 0) {
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      } else {
+        return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      }
+    }
+    
+    function updateTimerDisplay() {
+      const timerElement = document.getElementById('sessionTimer');
+      if (!timerElement) return;
+      
+      if (!sessionStartTime || !isTimerRunning) {
+        timerElement.textContent = '00:00';
+        return;
+      }
+      
+      const elapsedSeconds = Math.floor((Date.now() - sessionStartTime) / 1000);
+      timerElement.textContent = formatTime(elapsedSeconds);
+    }
+    
+    function startTimer() {
+      // Clear any existing interval
+      if (sessionTimerInterval) {
+        clearInterval(sessionTimerInterval);
+        sessionTimerInterval = null;
+      }
+      
+      // Reset start time to NOW
+      sessionStartTime = Date.now();
+      isTimerRunning = true;
+      
+      // Update display immediately
+      updateTimerDisplay();
+      
+      // Start new interval (update every second)
+      sessionTimerInterval = setInterval(() => {
+        if (isTimerRunning && sessionStartTime) {
+          updateTimerDisplay();
+        }
+      }, 1000);
+      
+      console.log('⏱️ Timer started at:', new Date().toLocaleTimeString());
+    }
+    
+    function stopTimer() {
+      isTimerRunning = false;
+      if (sessionTimerInterval) {
+        clearInterval(sessionTimerInterval);
+        sessionTimerInterval = null;
+      }
+      sessionStartTime = null;
+      
+      // Reset display to 00:00
+      const timerElement = document.getElementById('sessionTimer');
+      if (timerElement) {
+        timerElement.textContent = '00:00';
+      }
+      
+      console.log('⏱️ Timer stopped and reset');
+    }
+    
+    // Start timer immediately when script loads
+    // This ensures the timer runs as soon as the overlay is created
+    startTimer();
+    
+    // Listen for when the overlay window becomes visible (using visibility API)
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        // Page is hidden (minimized or tab switched) - keep timer running
+        console.log('📱 Overlay hidden (tab/minimized) - timer continues');
+      } else {
+        // Page became visible again - ensure timer is running
+        console.log('📱 Overlay became visible');
+        if (!isTimerRunning) {
+          startTimer();
+        }
+      }
+    }
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Listen for window focus/blur
+    window.addEventListener('focus', () => {
+      console.log('🪟 Window focused');
+      if (!isTimerRunning) {
+        startTimer();
+      }
+    });
+    
+    window.addEventListener('blur', () => {
+      console.log('🪟 Window blurred - timer continues');
+      // Don't stop timer on blur, just log
+    });
+    
+    // Also listen for beforeunload to ensure proper cleanup
+    window.addEventListener('beforeunload', () => {
+      if (sessionTimerInterval) {
+        clearInterval(sessionTimerInterval);
+      }
+    });
+    
+    // Listen for screenshot taken events
+    if (window.api && window.api.onScreenshotTaken) {
+      window.api.onScreenshotTaken((filename) => {
+        const container = document.getElementById('notificationContainer');
+        const notification = document.createElement('div');
+        notification.className = 'notification';
+        notification.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#D4A843" stroke-width="2">
+            <rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor"/>
+            <circle cx="12" cy="12" r="3" stroke="currentColor"/>
+          </svg>
+          <span>${filename}</span>
+        `;
+        container.appendChild(notification);
+        
+        setTimeout(() => {
+          notification.style.animation = 'slideInRight 0.3s reverse';
+          setTimeout(() => notification.remove(), 300);
+        }, 3000);
+      });
+    }
+    
+    // Handle checkout - stop timer when exiting
+    const checkoutBtn = document.getElementById('checkoutBtn');
+    if (checkoutBtn) {
+      checkoutBtn.addEventListener('click', async () => {
+        stopTimer();
+        if (window.api && window.api.checkOut) {
+          await window.api.checkOut();
+        }
+      });
+    }
+    
+    // Expose control functions for debugging
+    window.debugTimer = {
+      start: startTimer,
+      stop: stopTimer,
+      isRunning: () => isTimerRunning,
+      getElapsed: () => sessionStartTime ? Math.floor((Date.now() - sessionStartTime) / 1000) : 0
+    };
+    
+    console.log('✅ Overlay loaded - timer ready');
+  </script>
+</body>
+</html>
