@@ -2,100 +2,408 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GridTrack — Activity Monitor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: #0a0b0e;
+      color: #F0EDE6;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .login-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.95);
+      backdrop-filter: blur(12px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    
+    .login-modal.hidden {
+      display: none;
+    }
+    
+    .login-container {
+      background: #111318;
+      border-radius: 24px;
+      border: 1px solid rgba(255,255,255,0.1);
+      width: 100%;
+      max-width: 400px;
+      padding: 40px 32px;
+    }
+    
+    .login-container h2 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    
+    .login-container p {
+      font-size: 13px;
+      color: #9DA3B0;
+      margin-bottom: 28px;
+    }
+    
+    .login-field {
+      margin-bottom: 20px;
+    }
+    
+    .login-field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: #5A6178;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .login-field input {
+      width: 100%;
+      padding: 14px 16px;
+      font-size: 14px;
+      background: #1e2330;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      color: #F0EDE6;
+      outline: none;
+      font-family: 'Outfit', sans-serif;
+    }
+    
+    .login-field input:focus {
+      border-color: #C9922A;
+    }
+    
+    .login-field input[type="password"] {
+      user-select: auto !important;
+      pointer-events: auto !important;
+    }
+    
+    .login-error {
+      background: rgba(239,68,68,0.1);
+      border: 1px solid #EF4444;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 12px;
+      color: #EF4444;
+      margin-bottom: 20px;
+      display: none;
+    }
+    
+    .login-error.show {
+      display: block;
+    }
+    
+    .login-btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #C9922A, #8B5E1A);
+      border: none;
+      border-radius: 40px;
+      font-size: 16px;
+      font-weight: 600;
+      color: white;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+    
+    .login-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .shell {
+      width: 100%;
+      max-width: 480px;
+    }
+    
+    .panel {
+      background: #111318;
+      border-radius: 24px;
+      border: 1px solid rgba(255,255,255,0.08);
+      overflow: hidden;
+    }
+    
+    .panel-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 24px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .logo-name {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    
+    .logo-badge {
+      font-size: 9px;
+      color: #C9922A;
+      background: rgba(201,146,42,0.1);
+      border: 1px solid rgba(201,146,42,0.2);
+      border-radius: 4px;
+      padding: 2px 6px;
+    }
+    
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #5A6178;
+      display: inline-block;
+    }
+    
+    .panel-body {
+      padding: 32px 28px;
+    }
+    
+    .headline {
+      font-size: 44px;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 10px;
+    }
+    
+    .headline em {
+      color: #C9922A;
+      font-style: normal;
+    }
+    
+    .headline-sub {
+      font-size: 13px;
+      color: #9DA3B0;
+      margin-bottom: 28px;
+    }
+    
+    .user-info-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #1e2330;
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-bottom: 24px;
+    }
+    
+    .user-info-bar.hidden {
+      display: none;
+    }
+    
+    .user-name {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    
+    .user-email {
+      font-size: 11px;
+      color: #9DA3B0;
+    }
+    
+    .logout-btn {
+      background: rgba(239,68,68,0.15);
+      border: 1px solid #EF4444;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #EF4444;
+      cursor: pointer;
+    }
+    
+    .status-card {
+      background: #1e2330;
+      border-radius: 14px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      display: none;
+    }
+    
+    .status-card.visible {
+      display: block;
+    }
+    
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #5A6178;
+    }
+    
+    .status-dot.active {
+      background: #22C55E;
+      box-shadow: 0 0 0 3px rgba(34,197,94,0.2);
+    }
+    
+    .metrics-row {
+      display: flex;
+      justify-content: space-around;
+      margin-top: 12px;
+    }
+    
+    .metric {
+      text-align: center;
+    }
+    
+    .metric-num {
+      font-size: 24px;
+      font-weight: 600;
+    }
+    
+    .metric-num sub {
+      font-size: 10px;
+      color: #C9922A;
+    }
+    
+    .metric-lbl {
+      font-size: 10px;
+      color: #5A6178;
+      text-transform: uppercase;
+    }
+    
+    .cta-btn {
+      width: 100%;
+      padding: 16px;
+      background: linear-gradient(135deg, #C9922A, #8B5E1A);
+      border: none;
+      border-radius: 40px;
+      font-size: 16px;
+      font-weight: 600;
+      color: white;
+      cursor: pointer;
+      margin-bottom: 24px;
+    }
+    
+    .cta-btn.hidden {
+      display: none;
+    }
+    
+    .info-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .info-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: #5A6178;
+    }
+    
+    .info-dot {
+      width: 4px;
+      height: 4px;
+      background: #C9922A;
+      border-radius: 50%;
+    }
+    
+    .panel-foot {
+      padding: 14px 24px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      text-align: center;
+      font-size: 9px;
+      color: #5A6178;
+    }
+  </style>
 </head>
 <body>
-  <div class="bg-noise"></div>
-  <div class="bg-glow"></div>
+
+  <div id="loginModal" class="login-modal">
+    <div class="login-container">
+      <h2>GridTrack</h2>
+      <p>Sign in with your credentials</p>
+      
+      <div id="loginError" class="login-error"></div>
+      
+      <div class="login-field">
+        <label>EMAIL OR EMPLOYEE CODE</label>
+        <input type="text" id="loginIdentifier" placeholder="you@company.com or EMP001">
+      </div>
+      
+      <div class="login-field">
+        <label>PASSWORD</label>
+        <input type="password" id="loginPassword" placeholder="••••••••">
+      </div>
+      
+      <button id="loginBtn" class="login-btn">Sign In</button>
+    </div>
+  </div>
 
   <div class="shell">
     <div class="panel">
-
-      <!-- Top bar -->
       <div class="panel-topbar">
         <div class="topbar-left">
-          <div class="logo-mark">
-            <svg width="34" height="34" viewBox="0 0 34 34" fill="none">
-              <rect width="34" height="34" rx="9" fill="url(#logoGrad)"/>
-              <rect x="8" y="8"  width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.9)"/>
-              <rect x="19" y="8"  width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.5)"/>
-              <rect x="8" y="19" width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.5)"/>
-              <rect x="19" y="19" width="7" height="7" rx="1.5" fill="rgba(255,255,255,0.9)"/>
-              <defs>
-                <linearGradient id="logoGrad" x1="0" y1="0" x2="34" y2="34">
-                  <stop stop-color="#C9922A"/>
-                  <stop offset="1" stop-color="#8B5E1A"/>
-                </linearGradient>
-              </defs>
-            </svg>
-          </div>
-          <div class="logo-text">
-            <span class="logo-name">GRIDTRACK</span>
-            <span class="logo-badge">PRO</span>
-          </div>
+          <span class="logo-name">GRIDTRACK</span>
+          <span class="logo-badge">PRO</span>
         </div>
         <div class="topbar-right">
-          <div class="live-indicator" id="liveIndicator">
-            <span class="live-dot" id="headerStatusDot"></span>
-            <span class="live-label" id="headerStatusText">READY</span>
-          </div>
+          <span class="live-dot" id="headerStatusDot"></span>
           <span class="version-chip">v2.4.1</span>
         </div>
       </div>
 
-      <!-- Body -->
       <div class="panel-body">
+        <div class="headline">
+          Time<br><em>Tracking</em>
+        </div>
+        <p class="headline-sub">Start your session to begin monitoring activity</p>
 
-        <div class="headline-block">
-          <h1 class="headline">Time<br><em>Tracking</em></h1>
-          <p class="headline-sub">Start your session to begin monitoring activity</p>
+        <div id="userInfoBar" class="user-info-bar hidden">
+          <div class="user-details">
+            <span class="user-name" id="userName">—</span>
+            <span class="user-email" id="userEmail">—</span>
+          </div>
+          <button id="logoutBtn" class="logout-btn">Sign Out</button>
         </div>
 
-        <!-- Fields -->
-        <div class="fields-wrap">
-          <div class="field-col">
-            <label class="field-label" for="nameInput">
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="3.5" r="2" stroke="currentColor" stroke-width="1.1"/><path d="M1 9c0-1.657 1.79-3 4-3s4 1.343 4 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
-              Full Name
-            </label>
-            <input type="text" id="nameInput" class="field-input" placeholder="John Doe" autocomplete="name"/>
+        <div id="statusCard" class="status-card">
+          <div class="status-pill">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Not checked in</span>
           </div>
-          <div class="field-col">
-            <label class="field-label" for="phoneInput">
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="2" y="0.5" width="6" height="9" rx="1.2" stroke="currentColor" stroke-width="1.1"/><circle cx="5" cy="7.5" r="0.6" fill="currentColor"/></svg>
-              Phone Number
-            </label>
-            <input type="tel" id="phoneInput" class="field-input" placeholder="+1 (555) 000-0000" autocomplete="tel"/>
-          </div>
-        </div>
-
-        <!-- Status card -->
-        <div class="status-card" id="statusCard" style="display:none">
-          <div class="status-card-top">
-            <div class="status-pill">
-              <span class="status-dot" id="statusDot"></span>
-              <span class="status-text" id="statusText">Not checked in</span>
-            </div>
-            <span class="status-since" id="statusTime">—</span>
-          </div>
-          <div class="status-rule"></div>
           <div class="metrics-row">
             <div class="metric">
               <div class="metric-num"><span id="todayHours">0.0</span><sub>hrs</sub></div>
               <div class="metric-lbl">Today</div>
             </div>
-            <div class="metric-sep"></div>
             <div class="metric">
               <div class="metric-num"><span id="todaySessions">0</span><sub>sessions</sub></div>
               <div class="metric-lbl">Total</div>
             </div>
-            <div class="metric-sep"></div>
             <div class="metric">
               <div class="metric-num"><span id="todayScreenshots">0</span><sub>caps</sub></div>
               <div class="metric-lbl">Screenshots</div>
@@ -103,47 +411,288 @@
           </div>
         </div>
 
-        <!-- CTA -->
-        <button id="actionBtn" class="cta-btn" data-state="start">
-          <span class="cta-inner">
-            <span class="cta-icon" id="btnIcon">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><polygon points="5,3 13,8 5,13" fill="currentColor"/></svg>
-            </span>
-            <span class="cta-label" id="btnLabel">Start Session</span>
-          </span>
-          <span class="cta-sheen"></span>
-        </button>
+        <button id="actionBtn" class="cta-btn hidden">Start Session</button>
 
-        <!-- Info -->
         <div class="info-list">
-          <div class="info-row">
-            <span class="info-dot"></span>
-            Minimizes to overlay pill during active sessions
-          </div>
-          <div class="info-row">
-            <span class="info-dot"></span>
-            Captures screen at randomised 1–30 min intervals
-          </div>
-          <div class="info-row">
-            <span class="info-dot"></span>
-            End-to-end encrypted · data never leaves your server
-          </div>
+          <div class="info-row"><span class="info-dot"></span>Minimizes to overlay pill during active sessions</div>
+          <div class="info-row"><span class="info-dot"></span>Captures screen at randomised 1–30 min intervals</div>
+          <div class="info-row"><span class="info-dot"></span>End-to-end encrypted · data never leaves your server</div>
         </div>
-
       </div>
 
-      <!-- Footer -->
       <div class="panel-foot">
-        <span>SOC 2 Type II</span>
-        <span class="foot-sep">·</span>
-        <span>GDPR Compliant</span>
-        <span class="foot-sep">·</span>
-        <span>Enterprise Grade</span>
+        <span>SOC 2 Type II</span> · <span>GDPR Compliant</span> · <span>Enterprise Grade</span>
       </div>
-
     </div>
   </div>
 
-  <script src="renderer.js"></script>
+  <script>
+    const API_BASE = window.api?.getBackendUrl ? `${window.api.getBackendUrl()}/api` : 'http://127.0.0.1:3000/api';
+    
+    // DOM Elements
+    const loginModal = document.getElementById('loginModal');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginIdentifier = document.getElementById('loginIdentifier');
+    const loginPassword = document.getElementById('loginPassword');
+    const loginError = document.getElementById('loginError');
+    const userInfoBar = document.getElementById('userInfoBar');
+    const userName = document.getElementById('userName');
+    const userEmail = document.getElementById('userEmail');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const actionBtn = document.getElementById('actionBtn');
+    const statusCard = document.getElementById('statusCard');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const todayHours = document.getElementById('todayHours');
+    const todaySessions = document.getElementById('todaySessions');
+    const todayScreenshots = document.getElementById('todayScreenshots');
+    
+    let authToken = null;
+    let currentUser = null;
+    let isActionInProgress = false;
+    
+    // Helper to get auth token - THIS IS THE ADDED FUNCTION
+    window.getAuthToken = () => authToken;
+    
+    function showError(msg) {
+      loginError.textContent = msg;
+      loginError.classList.add('show');
+      setTimeout(() => loginError.classList.remove('show'), 5000);
+    }
+    
+    function hideLoginModal() {
+      loginModal.classList.add('hidden');
+    }
+    
+    function showAuthenticatedUI() {
+      userInfoBar.classList.remove('hidden');
+      actionBtn.classList.remove('hidden');
+      userName.textContent = currentUser?.name || currentUser?.email || currentUser?.employee_code;
+      userEmail.textContent = currentUser?.email || currentUser?.employee_code;
+    }
+    
+    // Update status - ONLY gets status, does NOT trigger check-in/out
+    async function updateStatus() {
+      if (!authToken) return;
+      
+      try {
+        const status = await window.api.getStatus();
+        console.log('📊 Status update:', status);
+        
+        if (status.hasActiveSession) {
+          statusCard.classList.add('visible');
+          statusDot.classList.add('active');
+          statusText.textContent = 'Currently Working';
+          actionBtn.textContent = 'End Session';
+        } else {
+          statusCard.classList.remove('visible');
+          statusDot.classList.remove('active');
+          statusText.textContent = 'Not checked in';
+          actionBtn.textContent = 'Start Session';
+        }
+        todayHours.textContent = status.todayHours?.total_hours || '0.0';
+        todaySessions.textContent = status.todayHours?.session_count || '0';
+        todayScreenshots.textContent = status.todayHours?.total_screenshots || '0';
+      } catch (err) {
+        console.error('Status update error:', err);
+      }
+    }
+    
+    // Check-in - ONLY called when user clicks Start Session
+    async function checkIn() {
+      if (isActionInProgress) {
+        console.log('⏳ Action in progress, ignoring');
+        return;
+      }
+      
+      if (!authToken) {
+        showError('Please login first');
+        return;
+      }
+      
+      isActionInProgress = true;
+      actionBtn.disabled = true;
+      actionBtn.textContent = 'Starting...';
+      
+      try {
+        console.log('📞 Calling check-in via IPC');
+        const data = await window.api.checkIn();
+        console.log('📞 Check-in response:', data);
+        
+        if (data && data.success) {
+          await updateStatus();
+          console.log('✅ Check-in successful');
+        } else {
+          showError(data?.error || 'Check-in failed');
+          await updateStatus();
+        }
+      } catch (err) {
+        console.error('❌ Check-in error:', err);
+        showError(err.message || 'Connection error');
+      } finally {
+        isActionInProgress = false;
+        actionBtn.disabled = false;
+      }
+    }
+    
+    // Check-out - ONLY called when user clicks End Session
+    async function checkOut() {
+      if (isActionInProgress) {
+        console.log('⏳ Action in progress, ignoring');
+        return;
+      }
+      
+      if (!authToken) return;
+      
+      isActionInProgress = true;
+      actionBtn.disabled = true;
+      actionBtn.textContent = 'Ending...';
+      
+      try {
+        console.log('📞 Calling check-out via IPC');
+        const data = await window.api.checkOut();
+        console.log('📞 Check-out response:', data);
+        
+        if (data && data.success) {
+          await updateStatus();
+          console.log('✅ Check-out successful');
+        } else {
+          showError(data?.error || 'Check-out failed');
+          await updateStatus();
+        }
+      } catch (err) {
+        console.error('❌ Check-out error:', err);
+        showError(err.message || 'Connection error');
+      } finally {
+        isActionInProgress = false;
+        actionBtn.disabled = false;
+      }
+    }
+    
+    // Login handler
+    async function handleLogin() {
+      const username = loginIdentifier.value.trim();
+      const password = loginPassword.value;
+      
+      if (!username || !password) {
+        showError('Please enter email/employee code and password');
+        return;
+      }
+      
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Signing in...';
+      
+      try {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          authToken = data.token;
+          currentUser = data.user;
+          
+          if (window.api && window.api.saveAuth) {
+            console.log('🔐 Saving auth to main process...');
+            await window.api.saveAuth(data.token, currentUser);
+          }
+          
+          localStorage.setItem('gridtrack_token', authToken);
+          hideLoginModal();
+          showAuthenticatedUI();
+          await updateStatus();
+          
+          loginIdentifier.value = '';
+          loginPassword.value = '';
+        } else {
+          showError(data.error || 'Login failed');
+        }
+      } catch (err) {
+        console.error('Login error:', err);
+        showError('Cannot connect to server');
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Sign In';
+      }
+    }
+    
+    // Logout handler
+    async function handleLogout() {
+      localStorage.removeItem('gridtrack_token');
+      authToken = null;
+      currentUser = null;
+      
+      if (window.api && window.api.clearAuth) {
+        await window.api.clearAuth();
+      }
+      
+      loginModal.classList.remove('hidden');
+      userInfoBar.classList.add('hidden');
+      actionBtn.classList.add('hidden');
+      statusCard.classList.remove('visible');
+    }
+    
+    // Check saved token on startup
+    async function checkSavedToken() {
+      const savedToken = localStorage.getItem('gridtrack_token');
+      if (savedToken) {
+        try {
+          const response = await fetch(`${API_BASE}/auth/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: savedToken })
+          });
+          const data = await response.json();
+          
+          if (data.success) {
+            authToken = savedToken;
+            currentUser = data.user;
+            
+            if (window.api && window.api.saveAuth) {
+              await window.api.saveAuth(savedToken, currentUser);
+            }
+            
+            hideLoginModal();
+            showAuthenticatedUI();
+            await updateStatus();
+          } else {
+            localStorage.removeItem('gridtrack_token');
+          }
+        } catch (err) {
+          localStorage.removeItem('gridtrack_token');
+        }
+      }
+    }
+    
+    // Enable paste in password field
+    const passwordInput = document.getElementById('loginPassword');
+    if (passwordInput) {
+      passwordInput.addEventListener('paste', (e) => {
+        e.stopPropagation();
+        return true;
+      });
+    }
+    
+    // Event listeners
+    loginBtn.addEventListener('click', handleLogin);
+    loginIdentifier.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+    loginPassword.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+    logoutBtn.addEventListener('click', handleLogout);
+    
+    // Action button - toggles between check-in and check-out based on current state
+    actionBtn.addEventListener('click', async () => {
+      if (statusText.textContent === 'Currently Working') {
+        await checkOut();
+      } else {
+        await checkIn();
+      }
+    });
+    
+    // Initialize
+    checkSavedToken();
+  </script>
 </body>
 </html>

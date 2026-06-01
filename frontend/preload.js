@@ -1,13 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('api', {
-  checkIn: (phone, name) => ipcRenderer.invoke('check-in', phone, name),
+  // Auth methods
+  saveAuth: (token, user) => ipcRenderer.invoke('save-auth', token, user),
+  getAuth: () => ipcRenderer.invoke('get-auth'),
+  clearAuth: () => ipcRenderer.invoke('clear-auth'),
+  
+  // Tracker methods
+  checkIn: () => ipcRenderer.invoke('check-in'),
   checkOut: () => ipcRenderer.invoke('check-out'),
   getStatus: () => ipcRenderer.invoke('get-status'),
-  saveCredentials: (phone, name) => ipcRenderer.invoke('save-credentials', phone, name),
-  getCredentials: () => ipcRenderer.invoke('get-credentials'),
+  
+  // Events
   onScreenshotTaken: (callback) => {
     ipcRenderer.on('screenshot-taken', (event, filename) => callback(filename));
   },
@@ -16,5 +20,11 @@ contextBridge.exposeInMainWorld('api', {
   },
   onNextScreenshot: (callback) => {
     ipcRenderer.on('next-screenshot', (event, minutes) => callback(minutes));
-  }
+  },
+  onSessionStarted: (callback) => {
+    ipcRenderer.on('session-started', () => callback());
+  },
+  
+  // Helper to expose ipcRenderer for overlay
+  getIpcRenderer: () => ipcRenderer
 });

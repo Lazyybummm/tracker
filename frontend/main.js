@@ -2,49 +2,56 @@ const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 const screenshotService = require('./screenshot-service');
+const dotenv = require('dotenv');
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 // Initialize electron store for user credentials
 const store = new Store({
   name: 'user-preferences',
   defaults: {
-    savedPhone: '',
-    savedName: ''
+    savedToken: '',
+    savedUser: null
   }
 });
 
 let overlayWindow = null;
 let checkInWindow = null;
 let isMonitoring = false;
-let currentPhone = null;
-let currentName = null;
+let currentUser = null;
 let currentSessionId = null;
 let screenshotSequence = 0;
 let heartbeatInterval = null;
 let nextScreenshotTimeout = null;
-let backendBaseUrl = 'http://127.0.0.1:3000'; // Make sure this matches your backend
+let backendBaseUrl = process.env.BACKEND_URL || 'http://127.0.0.1:3000';
+let authToken = null;
 
-// Random interval between MIN and MAX seconds (from env or defaults)
-const MIN_INTERVAL_SECONDS = 60; // 1 minute
-const MAX_INTERVAL_SECONDS = 300; // 30 minutes
+// Random interval between 1 and 5 minutes (60-300 seconds)
+const MIN_INTERVAL_SECONDS = 60;
+const MAX_INTERVAL_SECONDS = 300;
 
 // Disable default menu
 Menu.setApplicationMenu(null);
 
-// Helper function to make API calls with error handling
+// Helper function to make API calls with authentication
 async function apiCall(endpoint, options = {}) {
   const url = `${backendBaseUrl}${endpoint}`;
   console.log(`🌐 API Call: ${options.method || 'GET'} ${url}`);
   
   try {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers
+    };
+    
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    
     const response = await fetch(url, {
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-      }
+      headers
     });
     
-    // Check if response is JSON
     const contentType = response.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
       const text = await response.text();
@@ -67,6 +74,10 @@ async function apiCall(endpoint, options = {}) {
 
 // Create the main check-in window
 function createCheckInWindow() {
+  if (checkInWindow && !checkInWindow.isDestroyed()) {
+    checkInWindow.destroy();
+  }
+  
   checkInWindow = new BrowserWindow({
     width: 520,
     height: 620,
@@ -76,21 +87,29 @@ function createCheckInWindow() {
       preload: path.join(__dirname, 'preload.js')
     },
     resizable: false,
-    alwaysOnTop: true,
     frame: true,
     backgroundColor: '#0a0b0e',
-    titleBarStyle: 'hiddenInset'
+    titleBarStyle: 'hiddenInset',
+    show: false
   });
 
   checkInWindow.loadFile(path.join(__dirname, 'index.html'));
+  
+  checkInWindow.once('ready-to-show', () => {
+    checkInWindow.show();
+  });
   
   checkInWindow.on('closed', () => {
     checkInWindow = null;
   });
 }
 
-// Create the overlay window with draggable support
+// Create the overlay window
 function createOverlayWindow() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.destroy();
+  }
+  
   overlayWindow = new BrowserWindow({
     width: 300,
     height: 90,
@@ -113,14 +132,13 @@ function createOverlayWindow() {
   });
 
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
+  overlayWindow.setSkipTaskbar(true);
+  overlayWindow.setVisibleOnAllWorkspaces(true);
+  overlayWindow.setIgnoreMouseEvents(false);
+  
   overlayWindow.on('closed', () => {
     overlayWindow = null;
   });
-  overlayWindow.setSkipTaskbar(true);
-  overlayWindow.setVisibleOnAllWorkspaces(true);
-  
-  // Make the window ignore mouse events on transparent areas
-  overlayWindow.setIgnoreMouseEvents(false);
 }
 
 // Get new presigned URL for each screenshot
@@ -130,10 +148,8 @@ async function getNewPresignedUrl(sequence) {
   const data = await apiCall('/api/upload-request', {
     method: 'POST',
     body: JSON.stringify({
-      phone: currentPhone,
       sessionId: currentSessionId,
-      sequence: sequence,
-      userName: currentName
+      sequence: sequence
     })
   });
   
@@ -172,13 +188,12 @@ async function uploadScreenshot(screenshotBuffer, sequence) {
 
 // Send heartbeat to backend
 async function sendHeartbeat() {
-  if (!currentPhone || !currentSessionId) return;
+  if (!currentUser || !currentSessionId || !isMonitoring) return;
   
   try {
     await apiCall('/api/heartbeat', {
       method: 'POST',
       body: JSON.stringify({
-        phone: currentPhone,
         sessionId: currentSessionId
       })
     });
@@ -188,78 +203,131 @@ async function sendHeartbeat() {
   }
 }
 
-// Get random interval for next screenshot and update overlay
+// Get random interval for next screenshot
 function getRandomScreenshotInterval() {
   const minMs = MIN_INTERVAL_SECONDS * 1000;
   const maxMs = MAX_INTERVAL_SECONDS * 1000;
   const randomMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   const randomMinutes = (randomMs / 60000).toFixed(1);
   
-  // Send update to overlay
+  console.log(`📸 Next screenshot in ${randomMinutes} minutes (${randomMs/1000} seconds)`);
+  
+  // Send to overlay for display
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.webContents.send('next-screenshot', randomMinutes);
   }
   
-  console.log(`📸 Next screenshot in ${randomMinutes} minutes (${randomMs/1000} seconds)`);
   return randomMs;
 }
 
 // Take and upload screenshot
 async function takeAndUploadScreenshot() {
-  if (!isMonitoring) return;
+  if (!isMonitoring) {
+    console.log('⚠️ Not monitoring, skipping screenshot');
+    return;
+  }
   
   screenshotSequence++;
   console.log(`📸 Taking screenshot #${screenshotSequence}...`);
   
-  const screenshot = await screenshotService.capture();
-  
-  if (screenshot) {
-    const jpegBuffer = await screenshotService.convertToJPEG(screenshot, 75);
-    const uploadSuccess = await uploadScreenshot(jpegBuffer, screenshotSequence);
+  try {
+    const screenshotBuffer = await screenshotService.capture();
     
-    if (uploadSuccess && overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.webContents.send('screenshot-taken', `screenshot-${screenshotSequence}.jpg`);
+    if (screenshotBuffer) {
+      const jpegBuffer = await screenshotService.convertToJPEG(screenshotBuffer, 75);
+      const uploadSuccess = await uploadScreenshot(jpegBuffer, screenshotSequence);
+      
+      if (uploadSuccess && overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.webContents.send('screenshot-taken', `screenshot-${screenshotSequence}.jpg`);
+      } else if (!uploadSuccess) {
+        console.error(`❌ Failed to upload screenshot #${screenshotSequence}`);
+      }
+    } else {
+      console.error('❌ Failed to capture screenshot');
     }
+  } catch (error) {
+    console.error('❌ Screenshot error:', error);
   }
   
-  // Schedule next screenshot with random interval
+  // Schedule next screenshot if still monitoring
   if (isMonitoring) {
     const nextInterval = getRandomScreenshotInterval();
-    nextScreenshotTimeout = setTimeout(takeAndUploadScreenshot, nextInterval);
+    nextScreenshotTimeout = setTimeout(() => {
+      takeAndUploadScreenshot();
+    }, nextInterval);
   }
 }
 
 // Start monitoring
 async function startMonitoring() {
-  if (isMonitoring) return;
+  if (isMonitoring) {
+    console.log('⚠️ Already monitoring');
+    return true;
+  }
+  
+  console.log('🔍 startMonitoring() called');
+  console.log(`🔍 authToken exists: ${!!authToken}`);
+  console.log(`🔍 currentSessionId: ${currentSessionId}`);
+  
+  if (!authToken) {
+    console.error('❌ Cannot start monitoring: No auth token');
+    return false;
+  }
+  
+  if (!currentSessionId) {
+    console.error('❌ Cannot start monitoring: No session ID');
+    return false;
+  }
   
   isMonitoring = true;
   screenshotSequence = 0;
   console.log('🟢 Monitoring started');
   console.log(`⏱️ Screenshot interval: ${MIN_INTERVAL_SECONDS}-${MAX_INTERVAL_SECONDS} seconds`);
   
-  // Send initial next screenshot time to overlay
-  const initialDelay = Math.floor(Math.random() * (90000 - 30000 + 1)) + 30000;
-  const initialMinutes = (initialDelay / 60000).toFixed(1);
+  // Show overlay window
   if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send('next-screenshot', initialMinutes);
+    overlayWindow.show();
+    // Notify overlay that session started (timer reset)
+    overlayWindow.webContents.send('session-started');
+  } else {
+    console.error('❌ Overlay window not available');
+    createOverlayWindow();
+    setTimeout(() => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.show();
+        overlayWindow.webContents.send('session-started');
+      }
+    }, 500);
   }
   
   // Send heartbeat every 5 minutes
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
   heartbeatInterval = setInterval(() => {
     sendHeartbeat();
   }, 5 * 60 * 1000);
   
-  // Start screenshot loop with random initial delay (between 30-90 seconds)
-  console.log(`⏰ First screenshot in ${(initialDelay/1000).toFixed(0)} seconds`);
+  // Calculate initial delay (30-90 seconds)
+  const initialDelay = Math.floor(Math.random() * (90000 - 30000 + 1)) + 30000;
+  const initialMinutes = (initialDelay / 60000).toFixed(1);
+  console.log(`⏰ First screenshot in ${(initialDelay/1000).toFixed(0)} seconds (${initialMinutes} minutes)`);
   
-  setTimeout(() => {
+  // Schedule first screenshot
+  if (nextScreenshotTimeout) clearTimeout(nextScreenshotTimeout);
+  nextScreenshotTimeout = setTimeout(() => {
+    console.log('🎯 First screenshot timeout triggered');
     takeAndUploadScreenshot();
   }, initialDelay);
+  
+  return true;
 }
 
 // Stop monitoring
 function stopMonitoring() {
+  if (!isMonitoring) {
+    console.log('⚠️ Monitoring not active');
+    return;
+  }
+  
   isMonitoring = false;
   
   if (heartbeatInterval) {
@@ -275,144 +343,213 @@ function stopMonitoring() {
   console.log('🔴 Monitoring stopped');
 }
 
-// IPC handlers
-ipcMain.handle('save-credentials', async (event, phone, name) => {
-  store.set('savedPhone', phone);
-  store.set('savedName', name);
-  return { success: true };
-});
-
-ipcMain.handle('get-credentials', async () => {
-  return {
-    phone: store.get('savedPhone', ''),
-    name: store.get('savedName', '')
-  };
-});
-
-ipcMain.handle('check-in', async (event, phone, name) => {
-  console.log('📝 Check-in clicked for:', phone, name);
-  
-  currentPhone = phone;
-  currentName = name;
-  
-  // Save credentials
-  store.set('savedPhone', phone);
-  store.set('savedName', name);
-  
-  try {
-    // Call backend check-in
-    const data = await apiCall('/api/check-in', {
-      method: 'POST',
-      body: JSON.stringify({ phone: currentPhone, name: currentName })
-    });
-    
-    if (data.success) {
-      currentSessionId = data.sessionId;
-      
-      // Hide check-in window
-      if (checkInWindow && !checkInWindow.isDestroyed()) {
-        checkInWindow.hide();
-      }
-      
-      // Create and show overlay window
-      if (overlayWindow && !overlayWindow.isDestroyed()) {
-        overlayWindow.destroy();
-      }
-      
-      createOverlayWindow();
-      
-      overlayWindow.once('ready-to-show', () => {
-        overlayWindow.show();
-      });
-      
-      // Start monitoring
-      startMonitoring();
-      
-      return { success: true, sessionId: currentSessionId, todayHours: data.todayHours };
-    } else {
-      return { success: false, error: data.error };
-    }
-  } catch (error) {
-    console.error('Check-in failed:', error);
-    return { success: false, error: error.message };
-  }
-});
-
-ipcMain.handle('check-out', async () => {
-  console.log('📝 Check-out clicked');
-  
-  try {
-    // Call backend check-out
-    if (currentPhone) {
-      await apiCall('/api/check-out', {
-        method: 'POST',
-        body: JSON.stringify({ phone: currentPhone })
-      });
-    }
-  } catch (error) {
-    console.error('Check-out API error:', error);
-  }
-  
+// Reset session state
+async function resetSessionState() {
+  console.log('🔄 Resetting session state...');
   stopMonitoring();
+  currentSessionId = null;
+  screenshotSequence = 0;
   
-  // Hide overlay and show check-in window
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.hide();
   }
   
   if (checkInWindow && !checkInWindow.isDestroyed()) {
     checkInWindow.show();
+    // Send status update to refresh the UI
     checkInWindow.webContents.send('status-update', { status: 'checked-out' });
   }
-  
-  currentSessionId = null;
-  screenshotSequence = 0;
-  
+}
+
+// ============= IPC HANDLERS =============
+
+// Save auth token
+ipcMain.handle('save-auth', async (event, token, user) => {
+  console.log('🔐 SAVE-AUTH called');
+  authToken = token;
+  currentUser = user;
+  store.set('savedToken', token);
+  store.set('savedUser', user);
+  console.log('🔐 Auth saved, ready for check-in');
   return { success: true };
 });
 
-ipcMain.handle('get-status', async () => {
-  if (!currentPhone) {
-    return { hasActiveSession: false };
+// Get saved auth
+ipcMain.handle('get-auth', async () => {
+  return {
+    token: store.get('savedToken', ''),
+    user: store.get('savedUser', null)
+  };
+});
+
+// Clear auth
+ipcMain.handle('clear-auth', async () => {
+  console.log('🔐 CLEAR-AUTH called');
+  authToken = null;
+  currentUser = null;
+  await resetSessionState();
+  store.set('savedToken', '');
+  store.set('savedUser', null);
+  return { success: true };
+});
+
+// Check-in - MAIN IPC HANDLER
+ipcMain.handle('check-in', async () => {
+  console.log('📝 Check-in IPC handler called');
+  console.log(`🔑 Current user: ${currentUser?.name || currentUser?.email}`);
+  console.log(`🔑 Auth token exists: ${!!authToken}`);
+  
+  if (!currentUser || !authToken) {
+    console.error('❌ Check-in failed: Not authenticated');
+    return { success: false, error: 'Not authenticated. Please login again.' };
+  }
+  
+  // Check if already has active session
+  try {
+    const statusCheck = await apiCall('/api/user/status');
+    if (statusCheck.hasActiveSession) {
+      console.log('⚠️ User already has active session, reconnecting');
+      currentSessionId = statusCheck.activeSession?.session_id;
+      
+      // Start monitoring with existing session
+      const monitoringStarted = await startMonitoring();
+      
+      // Hide check-in window
+      if (checkInWindow && !checkInWindow.isDestroyed()) {
+        checkInWindow.hide();
+      }
+      
+      return { 
+        success: true, 
+        sessionId: currentSessionId,
+        alreadyActive: true,
+        message: 'Reconnected to active session'
+      };
+    }
+  } catch (err) {
+    console.log('Status check failed, proceeding with fresh check-in');
   }
   
   try {
-    const data = await apiCall(`/api/user/${currentPhone}/status`);
-    return data;
+    const data = await apiCall('/api/check-in', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    
+    if (data.success) {
+      currentSessionId = data.sessionId;
+      console.log('✅ Check-in successful, sessionId:', currentSessionId);
+      
+      // Ensure overlay window exists
+      if (!overlayWindow || overlayWindow.isDestroyed()) {
+        createOverlayWindow();
+      }
+      
+      // Hide check-in window
+      if (checkInWindow && !checkInWindow.isDestroyed()) {
+        checkInWindow.hide();
+      }
+      
+      // Start monitoring (this will show the overlay)
+      const monitoringStarted = await startMonitoring();
+      
+      if (!monitoringStarted) {
+        console.error('⚠️ Monitoring failed to start');
+      }
+      
+      return { 
+        success: true, 
+        sessionId: currentSessionId, 
+        todayHours: data.todayHours,
+        user: data.user
+      };
+    } else {
+      console.error('❌ Check-in failed:', data.error);
+      return { success: false, error: data.error };
+    }
   } catch (error) {
-    console.error('Status fetch error:', error);
-    return { hasActiveSession: false };
+    console.error('❌ Check-in error:', error);
+    return { success: false, error: error.message };
   }
 });
 
-// Handle overlay position persistence (optional)
-ipcMain.handle('save-overlay-position', async (event, bounds) => {
-  store.set('overlayPosition', bounds);
+// Check-out - MAIN IPC HANDLER
+ipcMain.handle('check-out', async () => {
+  console.log('📝 Check-out IPC handler called');
+  console.log(`Current sessionId: ${currentSessionId}`);
+  console.log(`Current user: ${currentUser?.name}`);
+  
+  if (!currentUser || !currentSessionId) {
+    console.log('⚠️ No active session to check out');
+    await resetSessionState();
+    return { success: true, message: 'No active session' };
+  }
+  
+  try {
+    // Call the check-out API
+    const result = await apiCall('/api/check-out', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    console.log('✅ Check-out API call successful:', result);
+  } catch (error) {
+    console.error('Check-out API error:', error);
+    // Still reset state even if API fails
+  }
+  
+  // Reset all session state
+  await resetSessionState();
+  
   return { success: true };
 });
 
-ipcMain.handle('get-overlay-position', async () => {
-  return store.get('overlayPosition', { x: 20, y: 20 });
+// Get user status
+ipcMain.handle('get-status', async () => {
+  console.log('📊 get-status called');
+  console.log(`Has authToken: ${!!authToken}`);
+  console.log(`Has currentSessionId: ${!!currentSessionId}`);
+  
+  if (!currentUser || !authToken) {
+    return { hasActiveSession: false, isAuthenticated: false };
+  }
+  
+  try {
+    const data = await apiCall('/api/user/status');
+    // Update currentSessionId if we have an active session from the server
+    if (data.hasActiveSession && data.activeSession?.session_id) {
+      currentSessionId = data.activeSession.session_id;
+      console.log(`Updated currentSessionId from status: ${currentSessionId}`);
+    } else if (!data.hasActiveSession) {
+      // If server says no active session, clear our local state
+      if (currentSessionId) {
+        console.log('Server reports no active session, clearing local state');
+        await resetSessionState();
+      }
+    }
+    return { ...data, isAuthenticated: true };
+  } catch (error) {
+    console.error('Status fetch error:', error);
+    return { hasActiveSession: false, isAuthenticated: true };
+  }
 });
 
 // App lifecycle
 app.whenReady().then(() => {
-  // Load saved credentials
-  const savedPhone = store.get('savedPhone');
-  const savedName = store.get('savedName');
-  if (savedPhone) {
-    currentPhone = savedPhone;
-    currentName = savedName;
+  console.log('🚀 App ready, loading saved credentials...');
+  
+  const savedToken = store.get('savedToken');
+  const savedUser = store.get('savedUser');
+  
+  if (savedToken && savedUser) {
+    authToken = savedToken;
+    currentUser = savedUser;
+    console.log('✅ Loaded saved auth token and user');
+  } else {
+    console.log('⚠️ No saved credentials found');
   }
   
   createCheckInWindow();
   createOverlayWindow();
-  
-  // Load saved overlay position if exists
-  const savedPosition = store.get('overlayPosition');
-  if (savedPosition && overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.setPosition(savedPosition.x, savedPosition.y);
-  }
 });
 
 app.on('window-all-closed', () => {

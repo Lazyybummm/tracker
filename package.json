@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "aws-sdk": "^2.1693.0",
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "electron-squirrel-startup": "^1.0.1",
@@ -54,7 +55,10 @@
         },
         {
           "name": "@electron-forge/maker-zip",
-          "platforms": ["darwin", "win32"]
+          "platforms": [
+            "darwin",
+            "win32"
+          ]
         },
         {
           "name": "@electron-forge/maker-deb",

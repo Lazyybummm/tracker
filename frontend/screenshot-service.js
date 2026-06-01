@@ -5,7 +5,7 @@ class ScreenshotService {
   async capture() {
     try {
       // Capture screenshot as buffer
-      const imgBuffer = await screenshot();
+      const imgBuffer = await screenshot({ format: 'png' });
       return imgBuffer;
     } catch (error) {
       console.error('Screenshot failed:', error);
@@ -16,7 +16,7 @@ class ScreenshotService {
   async convertToJPEG(buffer, quality = 75) {
     try {
       const jpegBuffer = await sharp(buffer)
-        .jpeg({ quality: quality, progressive: true })
+        .jpeg({ quality: quality, progressive: true, force: true })
         .toBuffer();
       return jpegBuffer;
     } catch (error) {

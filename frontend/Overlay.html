@@ -16,7 +16,6 @@
       -webkit-font-smoothing: antialiased;
     }
 
-    /* ── Overlay pill ──────────────────────────── */
     .overlay-wrap {
       position: fixed;
       bottom: 20px;
@@ -32,10 +31,7 @@
       backdrop-filter: blur(24px) saturate(160%);
       border: 1px solid rgba(201,146,42,0.22);
       border-radius: 99px;
-      box-shadow:
-        0 8px 32px rgba(0,0,0,0.45),
-        0 0 0 1px rgba(255,255,255,0.04),
-        inset 0 1px 0 rgba(255,255,255,0.06);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.04), inset 0 1px 0 rgba(255,255,255,0.06);
       pointer-events: auto;
       cursor: grab;
       transition: border-color 0.25s, box-shadow 0.25s;
@@ -44,15 +40,11 @@
 
     .pill:hover {
       border-color: rgba(201,146,42,0.4);
-      box-shadow:
-        0 12px 40px rgba(0,0,0,0.55),
-        0 0 0 1px rgba(255,255,255,0.06),
-        inset 0 1px 0 rgba(255,255,255,0.08);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.08);
     }
 
     .pill:active { cursor: grabbing; }
 
-    /* Left: session info */
     .pill-left {
       display: flex;
       align-items: center;
@@ -68,8 +60,6 @@
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
     }
-
-    .session-info {}
 
     .session-label {
       font-family: 'JetBrains Mono', monospace;
@@ -90,7 +80,6 @@
       line-height: 1;
     }
 
-    /* Divider */
     .pill-divider {
       width: 1px;
       height: 32px;
@@ -98,7 +87,6 @@
       flex-shrink: 0;
     }
 
-    /* Right: exit button */
     .pill-right {
       padding: 8px 10px 8px 14px;
     }
@@ -129,7 +117,6 @@
 
     .exit-btn:active { transform: scale(0.98); }
 
-    /* ── Notifications ─────────────────────────── */
     .notif-stack {
       position: fixed;
       top: 16px;
@@ -160,7 +147,7 @@
 
     @keyframes notifIn {
       from { opacity: 0; transform: translateX(16px); }
-      to   { opacity: 1; transform: translateX(0); }
+      to { opacity: 1; transform: translateX(0); }
     }
   </style>
 </head>
@@ -195,18 +182,10 @@
   <div class="notif-stack" id="notificationContainer"></div>
 
   <script>
-    /* ══════════════════════════════════════════════
-       SESSION TIMER
-       Always starts from 0 when overlay loads.
-       The overlay is created fresh each check-in
-       (see main.js — overlayWindow.show() is called
-       after createOverlayWindow()), so this is
-       inherently per-session.
-    ══════════════════════════════════════════════ */
     const timerEl = document.getElementById('sessionTimer');
-    let startTs   = Date.now(); // ← epoch of THIS session start (always now)
-    let rafId     = null;
-    let running   = true;
+    let startTs = null;
+    let rafId = null;
+    let running = false;
 
     function pad(n) { return String(n).padStart(2, '0'); }
 
@@ -215,18 +194,21 @@
       const h = Math.floor(totalSec / 3600);
       const m = Math.floor((totalSec % 3600) / 60);
       const s = totalSec % 60;
-      return h > 0
-        ? `${pad(h)}:${pad(m)}:${pad(s)}`
-        : `${pad(m)}:${pad(s)}`;
+      return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
     }
 
-    function tick() {
-      if (!running) return;
-      timerEl.textContent = formatElapsed(Date.now() - startTs);
-      rafId = requestAnimationFrame(tick);
+    function startTimer() {
+      if (running) stopTimer();
+      startTs = Date.now();
+      running = true;
+      
+      function tick() {
+        if (!running) return;
+        timerEl.textContent = formatElapsed(Date.now() - startTs);
+        rafId = requestAnimationFrame(tick);
+      }
+      tick();
     }
-
-    tick();
 
     function stopTimer() {
       running = false;
@@ -234,12 +216,9 @@
       timerEl.textContent = '00:00';
     }
 
-    /* ══════════════════════════════════════════════
-       DRAG
-    ══════════════════════════════════════════════ */
-    const pill  = document.getElementById('pill');
-    let dragging = false;
-    let ox = 0, oy = 0, startX = 0, startY = 0;
+    // Drag functionality
+    const pill = document.getElementById('pill');
+    let dragging = false, ox = 0, oy = 0, startX = 0, startY = 0;
 
     pill.addEventListener('mousedown', e => {
       if (e.target.closest('#checkoutBtn')) return;
@@ -247,49 +226,66 @@
       startX = e.clientX;
       startY = e.clientY;
       const r = pill.getBoundingClientRect();
-      ox = r.left; oy = r.top;
+      ox = r.left;
+      oy = r.top;
       e.preventDefault();
     });
 
     document.addEventListener('mousemove', e => {
       if (!dragging) return;
-      const nx = Math.max(8, Math.min(ox + e.clientX - startX, window.innerWidth  - pill.offsetWidth  - 8));
+      const nx = Math.max(8, Math.min(ox + e.clientX - startX, window.innerWidth - pill.offsetWidth - 8));
       const ny = Math.max(8, Math.min(oy + e.clientY - startY, window.innerHeight - pill.offsetHeight - 8));
       pill.parentElement.style.cssText = `position:fixed;left:${nx}px;top:${ny}px;bottom:auto`;
     });
 
     document.addEventListener('mouseup', () => { dragging = false; });
 
-    /* ══════════════════════════════════════════════
-       IPC — screenshot notification
-    ══════════════════════════════════════════════ */
-    if (window.api?.onScreenshotTaken) {
-      window.api.onScreenshotTaken(filename => {
-        const c = document.getElementById('notificationContainer');
+    // Event handlers using window.api
+    if (window.api) {
+      // Session started event
+      window.api.onSessionStarted(() => {
+        startTimer();
+      });
+
+      // Screenshot notification
+      window.api.onScreenshotTaken((filename) => {
+        const container = document.getElementById('notificationContainer');
         const n = document.createElement('div');
         n.className = 'notification';
-        n.innerHTML = `
-          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-            <rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="#C9922A" stroke-width="1.2"/>
-            <circle cx="7" cy="7.2" r="2" stroke="#C9922A" stroke-width="1.2"/>
-          </svg>
-          <span>${filename}</span>`;
-        c.appendChild(n);
+        n.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="#C9922A" stroke-width="1.2"/><circle cx="7" cy="7.2" r="2" stroke="#C9922A" stroke-width="1.2"/></svg><span>${filename}</span>`;
+        container.appendChild(n);
         setTimeout(() => {
           n.style.opacity = '0';
           n.style.transform = 'translateX(12px)';
           setTimeout(() => n.remove(), 280);
         }, 3200);
       });
-    }
 
-    /* ══════════════════════════════════════════════
-       CHECKOUT
-    ══════════════════════════════════════════════ */
-    document.getElementById('checkoutBtn').addEventListener('click', async () => {
-      stopTimer();
-      if (window.api?.checkOut) await window.api.checkOut();
-    });
+      // Next screenshot notification
+      window.api.onNextScreenshot((minutes) => {
+        const container = document.getElementById('notificationContainer');
+        const n = document.createElement('div');
+        n.className = 'notification';
+        n.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="#C9922A" stroke-width="1.3"/><path d="M7 4.5v2.8l1.8 1.2" stroke="#C9922A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Next capture in ~${minutes} min</span>`;
+        container.appendChild(n);
+        setTimeout(() => {
+          n.style.opacity = '0';
+          n.style.transform = 'translateX(12px)';
+          setTimeout(() => n.remove(), 2500);
+        }, 2500);
+      });
+
+      // Checkout button
+      document.getElementById('checkoutBtn').addEventListener('click', async () => {
+        stopTimer();
+        if (window.api.checkOut) await window.api.checkOut();
+      });
+
+      // Auto-start timer if session already active
+      window.api.getStatus().then(status => {
+        if (status && status.hasActiveSession) startTimer();
+      }).catch(err => console.log('Could not get initial status:', err));
+    }
   </script>
 </body>
 </html>
