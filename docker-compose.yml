@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: ./backend           # Points to backend subdirectory
+      dockerfile: Dockerfile       # Uses backend/Dockerfile
+    container_name: gridtrack-backend
+    restart: always
+    ports:
+      - "22843:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=${DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME}
+      - MIN_SCREENSHOT_INTERVAL=${MIN_SCREENSHOT_INTERVAL:-60}
+      - MAX_SCREENSHOT_INTERVAL=${MAX_SCREENSHOT_INTERVAL:-300}
+    env_file:
+      - .env
+    networks:
+      - gridtrack_network
+
+networks:
+  gridtrack_network:
+    driver: bridge
