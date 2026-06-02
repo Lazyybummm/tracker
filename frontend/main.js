@@ -22,7 +22,7 @@ let currentSessionId = null;
 let screenshotSequence = 0;
 let heartbeatInterval = null;
 let nextScreenshotTimeout = null;
-let backendBaseUrl = process.env.BACKEND_URL || 'http://127.0.0.1:3000';
+let backendBaseUrl = "https://api.track.gridsphere.in";
 let authToken = null;
 
 // Random interval between 1 and 5 minutes (60-300 seconds)
