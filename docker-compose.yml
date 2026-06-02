@@ -1,27 +1,24 @@
-version: '3.8'
-
 services:
-  app:
+  backend:
     build: .
-    container_name: biometric-tracker
+    container_name: biometric_backend
     restart: always
+    environment:
+      - PROJECT_NAME=BioMetric
+      - NODE_ENV=production
+      - PORT=3000
+      - R2_ACCOUNT_ID=bdce6341de1e7b4818a4832fbe29d68c
+      - R2_ACCESS_KEY_ID=28fb692bc554c8feb96a963c00bbc3e1
+      - R2_SECRET_ACCESS_KEY=2f73fcce066c3c441c3f15d25827892aa6371934de593ebaf4658be7758aa199
+      - R2_BUCKET_NAME=tracker
+      - DATABASE_URL=postgresql://grid:strongpassword@187.127.139.208:5432/biometric
+      - JWT_SECRET=stopreadingthesecret
+      - MIN_SCREENSHOT_INTERVAL=60
+      - MAX_SCREENSHOT_INTERVAL=300
     ports:
-      - "3000:3000"
-    env_file:
-      - .env
-    networks:
-      - biometric-network
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => {r.statusCode === 200 ? process.exit(0) : process.exit(1)})"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - "8457:3000"
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-networks:
-  biometric-network:
-    driver: bridge
