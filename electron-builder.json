@@ -1,0 +1,22 @@
+{
+  "appId": "com.gridtrack.monitor",
+  "productName": "GridTrack Monitor",
+  "directories": {
+    "output": "dist"
+  },
+  "files": [
+    "frontend/**/*",
+    "backend/**/*",
+    "node_modules/**/*"
+  ],
+  "win": {
+    "target": ["zip"],
+    "icon": "frontend/assets/icon.ico"
+  },
+  "npmRebuild": true,
+  "asar": true,
+  "asarUnpack": [
+    "node_modules/sharp/**/*",
+    "node_modules/@img/**/*"
+  ]
+}

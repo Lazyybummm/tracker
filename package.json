@@ -9,9 +9,13 @@
     "make": "electron-forge make",
     "make:win": "electron-forge make --platform=win32 --arch=x64",
     "make:mac": "electron-forge make --platform=darwin --arch=arm64",
-    "make:all": "electron-forge make --platform=win32 --arch=x64 && electron-forge make --platform=darwin --arch=arm64",
+    "make:win-zip": "electron-forge make --platform=win32 --arch=x64 --target=zip",
+    "make:all": "npm run make:win && npm run make:mac",
     "backend": "cd backend && nodemon server.js",
-    "dev": "concurrently \"npm run backend\" \"npm start\""
+    "dev": "concurrently \"npm run backend\" \"npm start\"",
+    "postinstall": "electron-rebuild",
+    "clean": "rm -rf out dist node_modules package-lock.json",
+    "rebuild-win": "npm run clean && npm install && npx electron-rebuild --platform=win32 --arch=x64"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.2",
@@ -22,9 +26,10 @@
     "@electron-forge/plugin-auto-unpack-natives": "^7.11.2",
     "@electron-forge/plugin-fuses": "^7.11.2",
     "@electron/fuses": "^1.8.0",
+    "@electron/rebuild": "^3.6.0",
     "concurrently": "^8.2.2",
     "electron": "^28.0.0",
-    "electron-packager": "^17.1.2",
+    "electron-builder": "^26.8.1",
     "nodemon": "^3.1.0"
   },
   "dependencies": {
@@ -40,35 +45,6 @@
     "sharp": "^0.33.1"
   },
   "config": {
-    "forge": {
-      "packagerConfig": {
-        "asar": true,
-        "name": "GridTrack Monitor",
-        "executableName": "gridtrack-monitor"
-      },
-      "makers": [
-        {
-          "name": "@electron-forge/maker-squirrel",
-          "config": {
-            "name": "gridtrack_monitor"
-          }
-        },
-        {
-          "name": "@electron-forge/maker-zip",
-          "platforms": [
-            "darwin",
-            "win32"
-          ]
-        },
-        {
-          "name": "@electron-forge/maker-deb",
-          "config": {}
-        },
-        {
-          "name": "@electron-forge/maker-rpm",
-          "config": {}
-        }
-      ]
-    }
+    "forge": "./frontend/forge.config.js"
   }
 }

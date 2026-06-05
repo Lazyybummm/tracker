@@ -1,0 +1,2368 @@
+
+================================================================================
+FILE: preload.js
+================================================================================
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('api', {
+  // Auth methods
+  saveAuth: (token, user) => ipcRenderer.invoke('save-auth', token, user),
+  getAuth: () => ipcRenderer.invoke('get-auth'),
+  clearAuth: () => ipcRenderer.invoke('clear-auth'),
+  
+  // Tracker methods
+  checkIn: () => ipcRenderer.invoke('check-in'),
+  checkOut: () => ipcRenderer.invoke('check-out'),
+  getStatus: () => ipcRenderer.invoke('get-status'),
+  
+  // Events
+  onScreenshotTaken: (callback) => {
+    ipcRenderer.on('screenshot-taken', (event, filename) => callback(filename));
+  },
+  onStatusUpdate: (callback) => {
+    ipcRenderer.on('status-update', (event, status) => callback(status));
+  },
+  onNextScreenshot: (callback) => {
+    ipcRenderer.on('next-screenshot', (event, minutes) => callback(minutes));
+  },
+  onSessionStarted: (callback) => {
+    ipcRenderer.on('session-started', () => callback());
+  },
+  
+  // Helper to expose ipcRenderer for overlay
+  getIpcRenderer: () => ipcRenderer
+});
+
+================================================================================
+FILE: renderer.js
+================================================================================
+
+/**
+ * renderer.js — GridTrack
+ */
+
+console.log('GridTrack renderer loaded');
+
+const isOverlay = window.location.pathname.includes('overlay.html');
+
+/* ══════════════════════════════════════════════════
+   OVERLAY WINDOW
+══════════════════════════════════════════════════ */
+if (isOverlay) {
+  const checkoutBtn = document.getElementById('checkoutBtn');
+
+  if (window.api?.onScreenshotTaken) {
+    window.api.onScreenshotTaken((filename) => {
+      const container = document.getElementById('notificationContainer');
+      if (!container) return;
+      const n = document.createElement('div');
+      n.className = 'notification';
+      n.innerHTML = `
+        <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+          <rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="#C9922A" stroke-width="1.2"/>
+          <circle cx="7" cy="7.2" r="2" stroke="#C9922A" stroke-width="1.2"/>
+        </svg>
+        <span>${filename}</span>`;
+      container.appendChild(n);
+      setTimeout(() => {
+        n.style.opacity = '0';
+        n.style.transform = 'translateX(12px)';
+        setTimeout(() => n.remove(), 300);
+      }, 3000);
+    });
+  }
+
+  checkoutBtn?.addEventListener('click', async () => {
+    if (window.api?.checkOut) await window.api.checkOut();
+  });
+
+/* ══════════════════════════════════════════════════
+   CHECK-IN WINDOW
+══════════════════════════════════════════════════ */
+} else {
+  const actionBtn         = document.getElementById('actionBtn');
+  const btnLabel          = document.getElementById('btnLabel');
+  const btnIcon           = document.getElementById('btnIcon');
+  const statusCard        = document.getElementById('statusCard');
+  const statusDot         = document.getElementById('statusDot');
+  const statusText        = document.getElementById('statusText');
+  const headerStatusDot   = document.getElementById('headerStatusDot');
+  const headerStatusText  = document.getElementById('headerStatusText');
+  const todayHoursElem    = document.getElementById('todayHours');
+  const todaySessionsElem = document.getElementById('todaySessions');
+  const todayScreenshotsElem = document.getElementById('todayScreenshots');
+
+  let isCheckedIn = false;
+
+  const ICON_PLAY = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><polygon points="5,3 13,8 5,13" fill="currentColor"/></svg>`;
+  const ICON_STOP = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>`;
+  const ICON_SPIN = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="animation:spin 0.8s linear infinite"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" stroke-dasharray="20 18"/></svg>`;
+
+  function setBtn(state) {
+    actionBtn.disabled = (state === 'loading-in' || state === 'loading-out');
+    actionBtn.dataset.state = (state === 'stop') ? 'stop' : 'start';
+
+    if (state === 'start') {
+      btnIcon.innerHTML = ICON_PLAY;
+      btnLabel.textContent = 'Start Session';
+      actionBtn.dataset.state = 'start';
+    } else if (state === 'stop') {
+      btnIcon.innerHTML = ICON_STOP;
+      btnLabel.textContent = 'End Session';
+      actionBtn.dataset.state = 'stop';
+    } else if (state === 'loading-in') {
+      btnIcon.innerHTML = ICON_SPIN;
+      btnLabel.textContent = 'Starting…';
+    } else if (state === 'loading-out') {
+      btnIcon.innerHTML = ICON_SPIN;
+      btnLabel.textContent = 'Ending…';
+    }
+  }
+
+  async function updateUIFromStatus() {
+    try {
+      const status = await window.api.getStatus();
+      
+      if (status.hasActiveSession) {
+        isCheckedIn = true;
+        setBtn('stop');
+        statusCard.style.display = 'block';
+        statusDot.className = 'status-dot active';
+        statusText.textContent = 'Currently Working';
+        if (headerStatusDot) headerStatusDot.className = 'live-dot online';
+        if (headerStatusText) headerStatusText.textContent = 'ACTIVE';
+        todayHoursElem.textContent = status.todayHours?.total_hours ?? '0.0';
+        todaySessionsElem.textContent = status.todayHours?.session_count ?? '0';
+        todayScreenshotsElem.textContent = status.todayHours?.total_screenshots ?? '0';
+      } else {
+        isCheckedIn = false;
+        setBtn('start');
+        statusCard.style.display = 'none';
+        statusDot.className = 'status-dot';
+        statusText.textContent = 'Not checked in';
+        if (headerStatusDot) headerStatusDot.className = 'live-dot';
+        if (headerStatusText) headerStatusText.textContent = 'READY';
+      }
+    } catch (err) {
+      console.error('Status update error:', err);
+      isCheckedIn = false;
+      setBtn('start');
+    }
+  }
+
+  async function checkIn() {
+    setBtn('loading-in');
+    try {
+      const result = await window.api.checkIn();
+      if (result.success) {
+        await updateUIFromStatus();
+      } else {
+        console.error('Check-in failed:', result.error);
+        setBtn('start');
+      }
+    } catch (err) {
+      console.error('Check-in error:', err);
+      setBtn('start');
+    }
+  }
+
+  async function checkOut() {
+    setBtn('loading-out');
+    try {
+      const result = await window.api.checkOut();
+      if (result.success) {
+        await updateUIFromStatus();
+      } else {
+        console.error('Check-out failed');
+        setBtn('stop');
+      }
+    } catch (err) {
+      console.error('Check-out error:', err);
+      setBtn('stop');
+    }
+  }
+
+  actionBtn.addEventListener('click', () => {
+    if (isCheckedIn) checkOut();
+    else checkIn();
+  });
+
+  window.api?.onStatusUpdate?.(() => updateUIFromStatus());
+  
+  // Initial load
+  updateUIFromStatus();
+}
+
+const style = document.createElement('style');
+style.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
+document.head.appendChild(style);
+
+================================================================================
+FILE: index.html
+================================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GridTrack — Activity Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: #0a0b0e;
+      color: #F0EDE6;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .login-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.95);
+      backdrop-filter: blur(12px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    
+    .login-modal.hidden {
+      display: none;
+    }
+    
+    .login-container {
+      background: #111318;
+      border-radius: 24px;
+      border: 1px solid rgba(255,255,255,0.1);
+      width: 100%;
+      max-width: 400px;
+      padding: 40px 32px;
+    }
+    
+    .login-container h2 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    
+    .login-container p {
+      font-size: 13px;
+      color: #9DA3B0;
+      margin-bottom: 28px;
+    }
+    
+    .login-field {
+      margin-bottom: 20px;
+    }
+    
+    .login-field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: #5A6178;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .login-field input {
+      width: 100%;
+      padding: 14px 16px;
+      font-size: 14px;
+      background: #1e2330;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      color: #F0EDE6;
+      outline: none;
+      font-family: 'Outfit', sans-serif;
+    }
+    
+    .login-field input:focus {
+      border-color: #C9922A;
+    }
+    
+    .login-field input[type="password"] {
+      user-select: auto !important;
+      pointer-events: auto !important;
+    }
+    
+    .login-error {
+      background: rgba(239,68,68,0.1);
+      border: 1px solid #EF4444;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 12px;
+      color: #EF4444;
+      margin-bottom: 20px;
+      display: none;
+    }
+    
+    .login-error.show {
+      display: block;
+    }
+    
+    .login-btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #C9922A, #8B5E1A);
+      border: none;
+      border-radius: 40px;
+      font-size: 16px;
+      font-weight: 600;
+      color: white;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+    
+    .login-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .shell {
+      width: 100%;
+      max-width: 480px;
+    }
+    
+    .panel {
+      background: #111318;
+      border-radius: 24px;
+      border: 1px solid rgba(255,255,255,0.08);
+      overflow: hidden;
+    }
+    
+    .panel-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 24px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .logo-name {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    
+    .logo-badge {
+      font-size: 9px;
+      color: #C9922A;
+      background: rgba(201,146,42,0.1);
+      border: 1px solid rgba(201,146,42,0.2);
+      border-radius: 4px;
+      padding: 2px 6px;
+    }
+    
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #5A6178;
+      display: inline-block;
+    }
+    
+    .panel-body {
+      padding: 32px 28px;
+    }
+    
+    .headline {
+      font-size: 44px;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 10px;
+    }
+    
+    .headline em {
+      color: #C9922A;
+      font-style: normal;
+    }
+    
+    .headline-sub {
+      font-size: 13px;
+      color: #9DA3B0;
+      margin-bottom: 28px;
+    }
+    
+    .user-info-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #1e2330;
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-bottom: 24px;
+    }
+    
+    .user-info-bar.hidden {
+      display: none;
+    }
+    
+    .user-name {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    
+    .user-email {
+      font-size: 11px;
+      color: #9DA3B0;
+    }
+    
+    .logout-btn {
+      background: rgba(239,68,68,0.15);
+      border: 1px solid #EF4444;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #EF4444;
+      cursor: pointer;
+    }
+    
+    .status-card {
+      background: #1e2330;
+      border-radius: 14px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      display: none;
+    }
+    
+    .status-card.visible {
+      display: block;
+    }
+    
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #5A6178;
+    }
+    
+    .status-dot.active {
+      background: #22C55E;
+      box-shadow: 0 0 0 3px rgba(34,197,94,0.2);
+    }
+    
+    .metrics-row {
+      display: flex;
+      justify-content: space-around;
+      margin-top: 12px;
+    }
+    
+    .metric {
+      text-align: center;
+    }
+    
+    .metric-num {
+      font-size: 24px;
+      font-weight: 600;
+    }
+    
+    .metric-num sub {
+      font-size: 10px;
+      color: #C9922A;
+    }
+    
+    .metric-lbl {
+      font-size: 10px;
+      color: #5A6178;
+      text-transform: uppercase;
+    }
+    
+    .cta-btn {
+      width: 100%;
+      padding: 16px;
+      background: linear-gradient(135deg, #C9922A, #8B5E1A);
+      border: none;
+      border-radius: 40px;
+      font-size: 16px;
+      font-weight: 600;
+      color: white;
+      cursor: pointer;
+      margin-bottom: 24px;
+    }
+    
+    .cta-btn.hidden {
+      display: none;
+    }
+    
+    .info-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .info-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: #5A6178;
+    }
+    
+    .info-dot {
+      width: 4px;
+      height: 4px;
+      background: #C9922A;
+      border-radius: 50%;
+    }
+    
+    .panel-foot {
+      padding: 14px 24px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      text-align: center;
+      font-size: 9px;
+      color: #5A6178;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="loginModal" class="login-modal">
+    <div class="login-container">
+      <h2>GridTrack</h2>
+      <p>Sign in with your credentials</p>
+      
+      <div id="loginError" class="login-error"></div>
+      
+      <div class="login-field">
+        <label>EMAIL OR EMPLOYEE CODE</label>
+        <input type="text" id="loginIdentifier" placeholder="you@company.com or EMP001">
+      </div>
+      
+      <div class="login-field">
+        <label>PASSWORD</label>
+        <input type="password" id="loginPassword" placeholder="••••••••">
+      </div>
+      
+      <button id="loginBtn" class="login-btn">Sign In</button>
+    </div>
+  </div>
+
+  <div class="shell">
+    <div class="panel">
+      <div class="panel-topbar">
+        <div class="topbar-left">
+          <span class="logo-name">GRIDTRACK</span>
+          <span class="logo-badge">PRO</span>
+        </div>
+        <div class="topbar-right">
+          <span class="live-dot" id="headerStatusDot"></span>
+          <span class="version-chip">v2.4.1</span>
+        </div>
+      </div>
+
+      <div class="panel-body">
+        <div class="headline">
+          Time<br><em>Tracking</em>
+        </div>
+        <p class="headline-sub">Start your session to begin monitoring activity</p>
+
+        <div id="userInfoBar" class="user-info-bar hidden">
+          <div class="user-details">
+            <span class="user-name" id="userName">—</span>
+            <span class="user-email" id="userEmail">—</span>
+          </div>
+          <button id="logoutBtn" class="logout-btn">Sign Out</button>
+        </div>
+
+        <div id="statusCard" class="status-card">
+          <div class="status-pill">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Not checked in</span>
+          </div>
+          <div class="metrics-row">
+            <div class="metric">
+              <div class="metric-num"><span id="todayHours">0.0</span><sub>hrs</sub></div>
+              <div class="metric-lbl">Today</div>
+            </div>
+            <div class="metric">
+              <div class="metric-num"><span id="todaySessions">0</span><sub>sessions</sub></div>
+              <div class="metric-lbl">Total</div>
+            </div>
+            <div class="metric">
+              <div class="metric-num"><span id="todayScreenshots">0</span><sub>caps</sub></div>
+              <div class="metric-lbl">Screenshots</div>
+            </div>
+          </div>
+        </div>
+
+        <button id="actionBtn" class="cta-btn hidden">Start Session</button>
+
+        <div class="info-list">
+          <div class="info-row"><span class="info-dot"></span>Minimizes to overlay pill during active sessions</div>
+          <div class="info-row"><span class="info-dot"></span>Captures screen at randomised 1–30 min intervals</div>
+          <div class="info-row"><span class="info-dot"></span>End-to-end encrypted · data never leaves your server</div>
+        </div>
+      </div>
+
+      <div class="panel-foot">
+        <span>SOC 2 Type II</span> · <span>GDPR Compliant</span> · <span>Enterprise Grade</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "https://api.track.gridsphere.in/api";
+    
+    // DOM Elements
+    const loginModal = document.getElementById('loginModal');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginIdentifier = document.getElementById('loginIdentifier');
+    const loginPassword = document.getElementById('loginPassword');
+    const loginError = document.getElementById('loginError');
+    const userInfoBar = document.getElementById('userInfoBar');
+    const userName = document.getElementById('userName');
+    const userEmail = document.getElementById('userEmail');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const actionBtn = document.getElementById('actionBtn');
+    const statusCard = document.getElementById('statusCard');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const todayHours = document.getElementById('todayHours');
+    const todaySessions = document.getElementById('todaySessions');
+    const todayScreenshots = document.getElementById('todayScreenshots');
+    
+    let authToken = null;
+    let currentUser = null;
+    let isActionInProgress = false;
+    
+    // Helper to get auth token - THIS IS THE ADDED FUNCTION
+    window.getAuthToken = () => authToken;
+    
+    function showError(msg) {
+      loginError.textContent = msg;
+      loginError.classList.add('show');
+      setTimeout(() => loginError.classList.remove('show'), 5000);
+    }
+    
+    function hideLoginModal() {
+      loginModal.classList.add('hidden');
+    }
+    
+    function showAuthenticatedUI() {
+      userInfoBar.classList.remove('hidden');
+      actionBtn.classList.remove('hidden');
+      userName.textContent = currentUser?.name || currentUser?.email || currentUser?.employee_code;
+      userEmail.textContent = currentUser?.email || currentUser?.employee_code;
+    }
+    
+    // Update status - ONLY gets status, does NOT trigger check-in/out
+    async function updateStatus() {
+      if (!authToken) return;
+      
+      try {
+        const status = await window.api.getStatus();
+        console.log('📊 Status update:', status);
+        
+        if (status.hasActiveSession) {
+          statusCard.classList.add('visible');
+          statusDot.classList.add('active');
+          statusText.textContent = 'Currently Working';
+          actionBtn.textContent = 'End Session';
+        } else {
+          statusCard.classList.remove('visible');
+          statusDot.classList.remove('active');
+          statusText.textContent = 'Not checked in';
+          actionBtn.textContent = 'Start Session';
+        }
+        todayHours.textContent = status.todayHours?.total_hours || '0.0';
+        todaySessions.textContent = status.todayHours?.session_count || '0';
+        todayScreenshots.textContent = status.todayHours?.total_screenshots || '0';
+      } catch (err) {
+        console.error('Status update error:', err);
+      }
+    }
+    
+    // Check-in - ONLY called when user clicks Start Session
+    async function checkIn() {
+      if (isActionInProgress) {
+        console.log('⏳ Action in progress, ignoring');
+        return;
+      }
+      
+      if (!authToken) {
+        showError('Please login first');
+        return;
+      }
+      
+      isActionInProgress = true;
+      actionBtn.disabled = true;
+      actionBtn.textContent = 'Starting...';
+      
+      try {
+        console.log('📞 Calling check-in via IPC');
+        const data = await window.api.checkIn();
+        console.log('📞 Check-in response:', data);
+        
+        if (data && data.success) {
+          await updateStatus();
+          console.log('✅ Check-in successful');
+        } else {
+          showError(data?.error || 'Check-in failed');
+          await updateStatus();
+        }
+      } catch (err) {
+        console.error('❌ Check-in error:', err);
+        showError(err.message || 'Connection error');
+      } finally {
+        isActionInProgress = false;
+        actionBtn.disabled = false;
+      }
+    }
+    
+    // Check-out - ONLY called when user clicks End Session
+    async function checkOut() {
+      if (isActionInProgress) {
+        console.log('⏳ Action in progress, ignoring');
+        return;
+      }
+      
+      if (!authToken) return;
+      
+      isActionInProgress = true;
+      actionBtn.disabled = true;
+      actionBtn.textContent = 'Ending...';
+      
+      try {
+        console.log('📞 Calling check-out via IPC');
+        const data = await window.api.checkOut();
+        console.log('📞 Check-out response:', data);
+        
+        if (data && data.success) {
+          await updateStatus();
+          console.log('✅ Check-out successful');
+        } else {
+          showError(data?.error || 'Check-out failed');
+          await updateStatus();
+        }
+      } catch (err) {
+        console.error('❌ Check-out error:', err);
+        showError(err.message || 'Connection error');
+      } finally {
+        isActionInProgress = false;
+        actionBtn.disabled = false;
+      }
+    }
+    
+    // Login handler
+    async function handleLogin() {
+      const username = loginIdentifier.value.trim();
+      const password = loginPassword.value;
+      
+      if (!username || !password) {
+        showError('Please enter email/employee code and password');
+        return;
+      }
+      
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Signing in...';
+      
+      try {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          authToken = data.token;
+          currentUser = data.user;
+          
+          if (window.api && window.api.saveAuth) {
+            console.log('🔐 Saving auth to main process...');
+            await window.api.saveAuth(data.token, currentUser);
+          }
+          
+          localStorage.setItem('gridtrack_token', authToken);
+          hideLoginModal();
+          showAuthenticatedUI();
+          await updateStatus();
+          
+          loginIdentifier.value = '';
+          loginPassword.value = '';
+        } else {
+          showError(data.error || 'Login failed');
+        }
+      } catch (err) {
+        console.error('Login error:', err);
+        showError('Cannot connect to server');
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Sign In';
+      }
+    }
+    
+    // Logout handler
+    async function handleLogout() {
+      localStorage.removeItem('gridtrack_token');
+      authToken = null;
+      currentUser = null;
+      
+      if (window.api && window.api.clearAuth) {
+        await window.api.clearAuth();
+      }
+      
+      loginModal.classList.remove('hidden');
+      userInfoBar.classList.add('hidden');
+      actionBtn.classList.add('hidden');
+      statusCard.classList.remove('visible');
+    }
+    
+    // Check saved token on startup
+    async function checkSavedToken() {
+      const savedToken = localStorage.getItem('gridtrack_token');
+      if (savedToken) {
+        try {
+          const response = await fetch(`${API_BASE}/auth/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: savedToken })
+          });
+          const data = await response.json();
+          
+          if (data.success) {
+            authToken = savedToken;
+            currentUser = data.user;
+            
+            if (window.api && window.api.saveAuth) {
+              await window.api.saveAuth(savedToken, currentUser);
+            }
+            
+            hideLoginModal();
+            showAuthenticatedUI();
+            await updateStatus();
+          } else {
+            localStorage.removeItem('gridtrack_token');
+          }
+        } catch (err) {
+          localStorage.removeItem('gridtrack_token');
+        }
+      }
+    }
+    
+    // Enable paste in password field
+    const passwordInput = document.getElementById('loginPassword');
+    if (passwordInput) {
+      passwordInput.addEventListener('paste', (e) => {
+        e.stopPropagation();
+        return true;
+      });
+    }
+    
+    // Event listeners
+    loginBtn.addEventListener('click', handleLogin);
+    loginIdentifier.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+    loginPassword.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+    logoutBtn.addEventListener('click', handleLogout);
+    
+    // Action button - toggles between check-in and check-out based on current state
+    actionBtn.addEventListener('click', async () => {
+      if (statusText.textContent === 'Currently Working') {
+        await checkOut();
+      } else {
+        await checkIn();
+      }
+    });
+    
+    // Initialize
+    checkSavedToken();
+  </script>
+</body>
+</html>
+
+================================================================================
+FILE: styles.css
+================================================================================
+
+/* ═══════════════════════════════════════════════
+   GRIDTRACK — styles.css
+   Aesthetic: Dark ink + warm amber, editorial-industrial
+═══════════════════════════════════════════════ */
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  /* Canvas */
+  --ink-900:   #09090B;
+  --ink-800:   #0F0F12;
+  --ink-700:   #161619;
+  --ink-600:   #1E1E23;
+  --ink-500:   #27272E;
+  --ink-400:   #3A3A45;
+
+  /* Borders */
+  --line-dim:  rgba(255,255,255,0.045);
+  --line-mid:  rgba(255,255,255,0.08);
+  --line-hi:   rgba(255,255,255,0.13);
+
+  /* Amber */
+  --gold:      #C9922A;
+  --gold-lit:  #E0A93A;
+  --gold-dim:  rgba(201,146,42,0.12);
+  --gold-glow: rgba(201,146,42,0.22);
+
+  /* Semantic */
+  --green:     #34D399;
+  --green-dim: rgba(52,211,153,0.12);
+  --red:       #FB7185;
+  --red-dim:   rgba(251,113,133,0.12);
+
+  /* Text */
+  --tx-hi:     #F5F3EE;
+  --tx-mid:    #9A9499;
+  --tx-lo:     #55535A;
+
+  /* Type */
+  --font-ui:   'Outfit', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Motion */
+  --ease-out:  cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-std:  cubic-bezier(0.4, 0, 0.2, 1);
+
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 26px;
+}
+
+html, body { height: 100%; }
+
+body {
+  font-family: var(--font-ui);
+  background: var(--ink-900);
+  color: var(--tx-hi);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* ── Background atmosphere ─── */
+.bg-noise {
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.6;
+}
+
+.bg-glow {
+  position: fixed;
+  width: 560px;
+  height: 560px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(201,146,42,0.07) 0%, transparent 70%);
+  top: -160px;
+  right: -140px;
+  pointer-events: none;
+  z-index: 0;
+  animation: breathe 14s ease-in-out infinite alternate;
+}
+
+@keyframes breathe {
+  from { transform: scale(1) translate(0,0); opacity: 0.8; }
+  to   { transform: scale(1.1) translate(-20px,20px); opacity: 1; }
+}
+
+/* ── Shell ─── */
+.shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 480px;
+  animation: rise 0.55s var(--ease-out) both;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(20px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Panel ─── */
+.panel {
+  background: var(--ink-800);
+  border-radius: var(--r-xl);
+  border: 1px solid var(--line-mid);
+  box-shadow:
+    0 0 0 1px var(--line-dim),
+    0 40px 80px -20px rgba(0,0,0,0.8),
+    0 0 60px -10px rgba(201,146,42,0.04);
+  overflow: hidden;
+}
+
+/* ── Topbar ─── */
+.panel-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 26px;
+  border-bottom: 1px solid var(--line-dim);
+  background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
+}
+
+.topbar-left { display: flex; align-items: center; gap: 11px; }
+
+.logo-mark { flex-shrink: 0; }
+
+.logo-text { display: flex; align-items: center; gap: 7px; }
+
+.logo-name {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.1em;
+  color: var(--tx-hi);
+}
+
+.logo-badge {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 500;
+  color: var(--gold);
+  background: var(--gold-dim);
+  border: 1px solid rgba(201,146,42,0.25);
+  border-radius: 4px;
+  padding: 2px 5px;
+  letter-spacing: 0.1em;
+}
+
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+.live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--ink-600);
+  border: 1px solid var(--line-dim);
+  border-radius: 99px;
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tx-lo);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+
+.live-dot.online {
+  background: var(--green);
+  box-shadow: 0 0 0 2px rgba(52,211,153,0.2);
+}
+
+.live-label {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 500;
+  color: var(--tx-lo);
+  letter-spacing: 0.1em;
+}
+
+.version-chip {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--tx-lo);
+  letter-spacing: 0.05em;
+}
+
+/* ── Body ─── */
+.panel-body { padding: 32px 28px 28px; }
+
+/* ── Headline ─── */
+.headline-block { margin-bottom: 30px; }
+
+.headline {
+  font-family: var(--font-ui);
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  color: var(--tx-hi);
+  margin-bottom: 10px;
+}
+
+.headline em {
+  font-style: normal;
+  color: var(--gold);
+  position: relative;
+}
+
+.headline-sub {
+  font-size: 12.5px;
+  font-weight: 300;
+  color: var(--tx-mid);
+  letter-spacing: 0.01em;
+  line-height: 1.5;
+}
+
+/* ── Fields ─── */
+.fields-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.field-col { display: flex; flex-direction: column; gap: 7px; }
+
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--tx-lo);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.field-label svg { color: var(--gold); opacity: 0.7; }
+
+.field-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--tx-hi);
+  background: var(--ink-600);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color 0.18s var(--ease-std), box-shadow 0.18s var(--ease-std), background 0.18s;
+}
+
+.field-input::placeholder { color: var(--tx-lo); font-style: italic; font-size: 12.5px; }
+
+.field-input:hover { background: var(--ink-500); }
+
+.field-input:focus {
+  border-color: var(--gold);
+  background: var(--ink-500);
+  box-shadow: 0 0 0 3px var(--gold-dim);
+}
+
+.field-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Status card ─── */
+.status-card {
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-md);
+  background: var(--ink-600);
+  margin-bottom: 24px;
+  overflow: hidden;
+  animation: unfold 0.3s var(--ease-out) both;
+}
+
+@keyframes unfold {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.status-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 14px;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--tx-lo);
+  transition: all 0.3s;
+  flex-shrink: 0;
+}
+
+.status-dot.active {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-dim);
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.3); }
+  50%       { box-shadow: 0 0 0 6px rgba(52,211,153,0); }
+}
+
+.status-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tx-hi);
+}
+
+.status-since {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--tx-lo);
+  letter-spacing: 0.05em;
+}
+
+.status-rule {
+  height: 1px;
+  background: var(--line-dim);
+  margin: 0 20px;
+}
+
+.metrics-row {
+  display: flex;
+  align-items: center;
+  padding: 16px 20px;
+}
+
+.metric { flex: 1; text-align: center; }
+
+.metric-num {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--tx-hi);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  margin-bottom: 5px;
+}
+
+.metric-num sub {
+  font-size: 9.5px;
+  color: var(--gold);
+  letter-spacing: 0.05em;
+  vertical-align: baseline;
+  margin-left: 3px;
+  font-weight: 400;
+}
+
+.metric-lbl {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--tx-lo);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.metric-sep {
+  width: 1px;
+  height: 38px;
+  background: var(--line-dim);
+  flex-shrink: 0;
+}
+
+/* ── CTA Button ─── */
+.cta-btn {
+  position: relative;
+  width: 100%;
+  border: none;
+  border-radius: 99px;
+  cursor: pointer;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--gold-lit) 0%, var(--gold) 60%, #7A4A10 100%);
+  box-shadow: 0 4px 24px var(--gold-glow), inset 0 1px 0 rgba(255,255,255,0.2);
+  transition: transform 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
+  margin-bottom: 26px;
+}
+
+.cta-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 32px var(--gold-glow), inset 0 1px 0 rgba(255,255,255,0.25);
+}
+
+.cta-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 2px 12px rgba(201,146,42,0.2);
+}
+
+/* Stop state */
+.cta-btn[data-state="stop"] {
+  background: linear-gradient(135deg, #FB7185 0%, #E11D48 100%);
+  box-shadow: 0 4px 24px rgba(251,113,133,0.28), inset 0 1px 0 rgba(255,255,255,0.15);
+}
+
+.cta-btn[data-state="stop"]:hover:not(:disabled) {
+  box-shadow: 0 10px 32px rgba(251,113,133,0.38), inset 0 1px 0 rgba(255,255,255,0.2);
+}
+
+.cta-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+.cta-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 17px 28px;
+}
+
+.cta-icon { display: flex; align-items: center; color: rgba(255,255,255,0.94); }
+
+.cta-label {
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.94);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cta-sheen {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 38%, rgba(255,255,255,0.1) 50%, transparent 62%);
+  background-size: 200% 100%;
+  animation: sheen 4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes sheen {
+  0%   { background-position: -100% 0; }
+  45%  { background-position: 200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── Info list ─── */
+.info-list { display: flex; flex-direction: column; gap: 9px; }
+
+.info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 300;
+  color: var(--tx-lo);
+  letter-spacing: 0.01em;
+  transition: color 0.15s;
+}
+
+.info-row:hover { color: var(--tx-mid); }
+
+.info-dot {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--gold);
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+/* ── Footer ─── */
+.panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 28px;
+  border-top: 1px solid var(--line-dim);
+  background: rgba(0,0,0,0.15);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--tx-lo);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.foot-sep { opacity: 0.3; }
+
+/* ── Responsive ─── */
+@media (max-width: 480px) {
+  body { padding: 12px; }
+  .panel-body { padding: 24px 20px 20px; }
+  .panel-topbar { padding: 16px 20px; }
+  .headline { font-size: 36px; }
+  .fields-wrap { grid-template-columns: 1fr; gap: 12px; }
+  .metric-num { font-size: 22px; }
+}
+
+================================================================================
+FILE: screenshot-service.js
+================================================================================
+
+const screenshot = require('screenshot-desktop');
+const sharp = require('sharp');
+
+class ScreenshotService {
+  async capture() {
+    try {
+      // Capture screenshot as buffer
+      const imgBuffer = await screenshot({ format: 'png' });
+      return imgBuffer;
+    } catch (error) {
+      console.error('Screenshot failed:', error);
+      return null;
+    }
+  }
+  
+  async convertToJPEG(buffer, quality = 75) {
+    try {
+      const jpegBuffer = await sharp(buffer)
+        .jpeg({ quality: quality, progressive: true, force: true })
+        .toBuffer();
+      return jpegBuffer;
+    } catch (error) {
+      console.error('JPEG conversion failed:', error);
+      return buffer;
+    }
+  }
+}
+
+module.exports = new ScreenshotService();
+
+================================================================================
+FILE: main.js
+================================================================================
+
+const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const path = require('path');
+const Store = require('electron-store');
+const screenshotService = require('./screenshot-service');
+const dotenv = require('dotenv');
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+// Initialize electron store for user credentials
+const store = new Store({
+  name: 'user-preferences',
+  defaults: {
+    savedToken: '',
+    savedUser: null
+  }
+});
+
+let overlayWindow = null;
+let checkInWindow = null;
+let isMonitoring = false;
+let currentUser = null;
+let currentSessionId = null;
+let screenshotSequence = 0;
+let heartbeatInterval = null;
+let nextScreenshotTimeout = null;
+let backendBaseUrl = "https://api.track.gridsphere.in";
+let authToken = null;
+
+// Random interval between 1 and 5 minutes (60-300 seconds)
+const MIN_INTERVAL_SECONDS = 60;
+const MAX_INTERVAL_SECONDS = 300;
+
+// Disable default menu
+Menu.setApplicationMenu(null);
+
+// Helper function to make API calls with authentication
+async function apiCall(endpoint, options = {}) {
+  const url = `${backendBaseUrl}${endpoint}`;
+  console.log(`🌐 API Call: ${options.method || 'GET'} ${url}`);
+  
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers
+    };
+    
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    
+    const response = await fetch(url, {
+      ...options,
+      headers
+    });
+    
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error(`❌ Non-JSON response from ${endpoint}:`, text.substring(0, 200));
+      throw new Error(`Server returned ${contentType || 'unknown content type'}. Expected JSON.`);
+    }
+    
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error(`❌ API call failed (${endpoint}):`, error.message);
+    throw error;
+  }
+}
+
+// Create the main check-in window
+function createCheckInWindow() {
+  if (checkInWindow && !checkInWindow.isDestroyed()) {
+    checkInWindow.destroy();
+  }
+  
+  checkInWindow = new BrowserWindow({
+    width: 520,
+    height: 620,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
+    },
+    resizable: false,
+    frame: true,
+    backgroundColor: '#0a0b0e',
+    titleBarStyle: 'hiddenInset',
+    show: false
+  });
+
+  checkInWindow.loadFile(path.join(__dirname, 'index.html'));
+  
+  checkInWindow.once('ready-to-show', () => {
+    checkInWindow.show();
+  });
+  
+  checkInWindow.on('closed', () => {
+    checkInWindow = null;
+  });
+}
+
+// Create the overlay window
+function createOverlayWindow() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.destroy();
+  }
+  
+  overlayWindow = new BrowserWindow({
+    width: 300,
+    height: 90,
+    x: 20,
+    y: 20,
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
+    },
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    movable: true,
+    resizable: false
+  });
+
+  overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
+  overlayWindow.setSkipTaskbar(true);
+  overlayWindow.setVisibleOnAllWorkspaces(true);
+  overlayWindow.setIgnoreMouseEvents(false);
+  
+  overlayWindow.on('closed', () => {
+    overlayWindow = null;
+  });
+}
+
+// Get new presigned URL for each screenshot
+async function getNewPresignedUrl(sequence) {
+  console.log(`🔗 Requesting new presigned URL for screenshot #${sequence}`);
+  
+  const data = await apiCall('/api/upload-request', {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: currentSessionId,
+      sequence: sequence
+    })
+  });
+  
+  if (data.success) {
+    console.log(`✅ Got presigned URL for screenshot #${sequence}`);
+    return data.presignedUrl;
+  } else {
+    throw new Error(data.error || 'Failed to get presigned URL');
+  }
+}
+
+// Upload screenshot to R2
+async function uploadScreenshot(screenshotBuffer, sequence) {
+  try {
+    const presignedUrl = await getNewPresignedUrl(sequence);
+    
+    const response = await fetch(presignedUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: screenshotBuffer
+    });
+    
+    if (response.ok) {
+      console.log(`✅ Screenshot #${sequence} uploaded successfully`);
+      return true;
+    } else {
+      const errorText = await response.text();
+      console.error(`❌ Upload failed for #${sequence}:`, response.status, errorText);
+      return false;
+    }
+  } catch (error) {
+    console.error(`❌ Upload error for #${sequence}:`, error);
+    return false;
+  }
+}
+
+// Send heartbeat to backend
+async function sendHeartbeat() {
+  if (!currentUser || !currentSessionId || !isMonitoring) return;
+  
+  try {
+    await apiCall('/api/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({
+        sessionId: currentSessionId
+      })
+    });
+    console.log('💓 Heartbeat sent successfully');
+  } catch (error) {
+    console.error('⚠️ Heartbeat failed:', error);
+  }
+}
+
+// Get random interval for next screenshot
+function getRandomScreenshotInterval() {
+  const minMs = MIN_INTERVAL_SECONDS * 1000;
+  const maxMs = MAX_INTERVAL_SECONDS * 1000;
+  const randomMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  const randomMinutes = (randomMs / 60000).toFixed(1);
+  
+  console.log(`📸 Next screenshot in ${randomMinutes} minutes (${randomMs/1000} seconds)`);
+  
+  // Send to overlay for display
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('next-screenshot', randomMinutes);
+  }
+  
+  return randomMs;
+}
+
+// Take and upload screenshot
+async function takeAndUploadScreenshot() {
+  if (!isMonitoring) {
+    console.log('⚠️ Not monitoring, skipping screenshot');
+    return;
+  }
+  
+  screenshotSequence++;
+  console.log(`📸 Taking screenshot #${screenshotSequence}...`);
+  
+  try {
+    const screenshotBuffer = await screenshotService.capture();
+    
+    if (screenshotBuffer) {
+      const jpegBuffer = await screenshotService.convertToJPEG(screenshotBuffer, 75);
+      const uploadSuccess = await uploadScreenshot(jpegBuffer, screenshotSequence);
+      
+      if (uploadSuccess && overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.webContents.send('screenshot-taken', `screenshot-${screenshotSequence}.jpg`);
+      } else if (!uploadSuccess) {
+        console.error(`❌ Failed to upload screenshot #${screenshotSequence}`);
+      }
+    } else {
+      console.error('❌ Failed to capture screenshot');
+    }
+  } catch (error) {
+    console.error('❌ Screenshot error:', error);
+  }
+  
+  // Schedule next screenshot if still monitoring
+  if (isMonitoring) {
+    const nextInterval = getRandomScreenshotInterval();
+    nextScreenshotTimeout = setTimeout(() => {
+      takeAndUploadScreenshot();
+    }, nextInterval);
+  }
+}
+
+// Start monitoring
+async function startMonitoring() {
+  if (isMonitoring) {
+    console.log('⚠️ Already monitoring');
+    return true;
+  }
+  
+  console.log('🔍 startMonitoring() called');
+  console.log(`🔍 authToken exists: ${!!authToken}`);
+  console.log(`🔍 currentSessionId: ${currentSessionId}`);
+  
+  if (!authToken) {
+    console.error('❌ Cannot start monitoring: No auth token');
+    return false;
+  }
+  
+  if (!currentSessionId) {
+    console.error('❌ Cannot start monitoring: No session ID');
+    return false;
+  }
+  
+  isMonitoring = true;
+  screenshotSequence = 0;
+  console.log('🟢 Monitoring started');
+  console.log(`⏱️ Screenshot interval: ${MIN_INTERVAL_SECONDS}-${MAX_INTERVAL_SECONDS} seconds`);
+  
+  // Show overlay window
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.show();
+    // Notify overlay that session started (timer reset)
+    overlayWindow.webContents.send('session-started');
+  } else {
+    console.error('❌ Overlay window not available');
+    createOverlayWindow();
+    setTimeout(() => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.show();
+        overlayWindow.webContents.send('session-started');
+      }
+    }, 500);
+  }
+  
+  // Send heartbeat every 5 minutes
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  heartbeatInterval = setInterval(() => {
+    sendHeartbeat();
+  }, 5 * 60 * 1000);
+  
+  // Calculate initial delay (30-90 seconds)
+  const initialDelay = Math.floor(Math.random() * (90000 - 30000 + 1)) + 30000;
+  const initialMinutes = (initialDelay / 60000).toFixed(1);
+  console.log(`⏰ First screenshot in ${(initialDelay/1000).toFixed(0)} seconds (${initialMinutes} minutes)`);
+  
+  // Schedule first screenshot
+  if (nextScreenshotTimeout) clearTimeout(nextScreenshotTimeout);
+  nextScreenshotTimeout = setTimeout(() => {
+    console.log('🎯 First screenshot timeout triggered');
+    takeAndUploadScreenshot();
+  }, initialDelay);
+  
+  return true;
+}
+
+// Stop monitoring
+function stopMonitoring() {
+  if (!isMonitoring) {
+    console.log('⚠️ Monitoring not active');
+    return;
+  }
+  
+  isMonitoring = false;
+  
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+  
+  if (nextScreenshotTimeout) {
+    clearTimeout(nextScreenshotTimeout);
+    nextScreenshotTimeout = null;
+  }
+  
+  console.log('🔴 Monitoring stopped');
+}
+
+// Reset session state
+async function resetSessionState() {
+  console.log('🔄 Resetting session state...');
+  stopMonitoring();
+  currentSessionId = null;
+  screenshotSequence = 0;
+  
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.hide();
+  }
+  
+  if (checkInWindow && !checkInWindow.isDestroyed()) {
+    checkInWindow.show();
+    // Send status update to refresh the UI
+    checkInWindow.webContents.send('status-update', { status: 'checked-out' });
+  }
+}
+
+// ============= IPC HANDLERS =============
+
+// Save auth token
+ipcMain.handle('save-auth', async (event, token, user) => {
+  console.log('🔐 SAVE-AUTH called');
+  authToken = token;
+  currentUser = user;
+  store.set('savedToken', token);
+  store.set('savedUser', user);
+  console.log('🔐 Auth saved, ready for check-in');
+  return { success: true };
+});
+
+// Get saved auth
+ipcMain.handle('get-auth', async () => {
+  return {
+    token: store.get('savedToken', ''),
+    user: store.get('savedUser', null)
+  };
+});
+
+// Clear auth
+ipcMain.handle('clear-auth', async () => {
+  console.log('🔐 CLEAR-AUTH called');
+  authToken = null;
+  currentUser = null;
+  await resetSessionState();
+  store.set('savedToken', '');
+  store.set('savedUser', null);
+  return { success: true };
+});
+
+// Check-in - MAIN IPC HANDLER
+ipcMain.handle('check-in', async () => {
+  console.log('📝 Check-in IPC handler called');
+  console.log(`🔑 Current user: ${currentUser?.name || currentUser?.email}`);
+  console.log(`🔑 Auth token exists: ${!!authToken}`);
+  
+  if (!currentUser || !authToken) {
+    console.error('❌ Check-in failed: Not authenticated');
+    return { success: false, error: 'Not authenticated. Please login again.' };
+  }
+  
+  // Check if already has active session
+  try {
+    const statusCheck = await apiCall('/api/user/status');
+    if (statusCheck.hasActiveSession) {
+      console.log('⚠️ User already has active session, reconnecting');
+      currentSessionId = statusCheck.activeSession?.session_id;
+      
+      // Start monitoring with existing session
+      const monitoringStarted = await startMonitoring();
+      
+      // Hide check-in window
+      if (checkInWindow && !checkInWindow.isDestroyed()) {
+        checkInWindow.hide();
+      }
+      
+      return { 
+        success: true, 
+        sessionId: currentSessionId,
+        alreadyActive: true,
+        message: 'Reconnected to active session'
+      };
+    }
+  } catch (err) {
+    console.log('Status check failed, proceeding with fresh check-in');
+  }
+  
+  try {
+    const data = await apiCall('/api/check-in', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    
+    if (data.success) {
+      currentSessionId = data.sessionId;
+      console.log('✅ Check-in successful, sessionId:', currentSessionId);
+      
+      // Ensure overlay window exists
+      if (!overlayWindow || overlayWindow.isDestroyed()) {
+        createOverlayWindow();
+      }
+      
+      // Hide check-in window
+      if (checkInWindow && !checkInWindow.isDestroyed()) {
+        checkInWindow.hide();
+      }
+      
+      // Start monitoring (this will show the overlay)
+      const monitoringStarted = await startMonitoring();
+      
+      if (!monitoringStarted) {
+        console.error('⚠️ Monitoring failed to start');
+      }
+      
+      return { 
+        success: true, 
+        sessionId: currentSessionId, 
+        todayHours: data.todayHours,
+        user: data.user
+      };
+    } else {
+      console.error('❌ Check-in failed:', data.error);
+      return { success: false, error: data.error };
+    }
+  } catch (error) {
+    console.error('❌ Check-in error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Check-out - MAIN IPC HANDLER
+ipcMain.handle('check-out', async () => {
+  console.log('📝 Check-out IPC handler called');
+  console.log(`Current sessionId: ${currentSessionId}`);
+  console.log(`Current user: ${currentUser?.name}`);
+  
+  if (!currentUser || !currentSessionId) {
+    console.log('⚠️ No active session to check out');
+    await resetSessionState();
+    return { success: true, message: 'No active session' };
+  }
+  
+  try {
+    // Call the check-out API
+    const result = await apiCall('/api/check-out', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    console.log('✅ Check-out API call successful:', result);
+  } catch (error) {
+    console.error('Check-out API error:', error);
+    // Still reset state even if API fails
+  }
+  
+  // Reset all session state
+  await resetSessionState();
+  
+  return { success: true };
+});
+
+// Get user status
+ipcMain.handle('get-status', async () => {
+  console.log('📊 get-status called');
+  console.log(`Has authToken: ${!!authToken}`);
+  console.log(`Has currentSessionId: ${!!currentSessionId}`);
+  
+  if (!currentUser || !authToken) {
+    return { hasActiveSession: false, isAuthenticated: false };
+  }
+  
+  try {
+    const data = await apiCall('/api/user/status');
+    // Update currentSessionId if we have an active session from the server
+    if (data.hasActiveSession && data.activeSession?.session_id) {
+      currentSessionId = data.activeSession.session_id;
+      console.log(`Updated currentSessionId from status: ${currentSessionId}`);
+    } else if (!data.hasActiveSession) {
+      // If server says no active session, clear our local state
+      if (currentSessionId) {
+        console.log('Server reports no active session, clearing local state');
+        await resetSessionState();
+      }
+    }
+    return { ...data, isAuthenticated: true };
+  } catch (error) {
+    console.error('Status fetch error:', error);
+    return { hasActiveSession: false, isAuthenticated: true };
+  }
+});
+
+// App lifecycle
+app.whenReady().then(() => {
+  console.log('🚀 App ready, loading saved credentials...');
+  
+  const savedToken = store.get('savedToken');
+  const savedUser = store.get('savedUser');
+  
+  if (savedToken && savedUser) {
+    authToken = savedToken;
+    currentUser = savedUser;
+    console.log('✅ Loaded saved auth token and user');
+  } else {
+    console.log('⚠️ No saved credentials found');
+  }
+  
+  createCheckInWindow();
+  createOverlayWindow();
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+================================================================================
+FILE: forge.config.js
+================================================================================
+
+const { FusesPlugin } = require('@electron-forge/plugin-fuses');
+const { FuseV1Options, FuseVersion } = require('@electron/fuses');
+
+module.exports = {
+  packagerConfig: {
+    asar: true,
+  },
+  rebuildConfig: {},
+  makers: [
+    {
+      name: '@electron-forge/maker-squirrel',
+      config: {},
+    },
+    {
+      name: '@electron-forge/maker-zip',
+      platforms: ['darwin'],
+    },
+    {
+      name: '@electron-forge/maker-deb',
+      config: {},
+    },
+    {
+      name: '@electron-forge/maker-rpm',
+      config: {},
+    },
+  ],
+  plugins: [
+    {
+      name: '@electron-forge/plugin-auto-unpack-natives',
+      config: {},
+    },
+    // Fuses are used to enable/disable various Electron functionality
+    // at package time, before code signing the application
+    new FusesPlugin({
+      version: FuseVersion.V1,
+      [FuseV1Options.RunAsNode]: false,
+      [FuseV1Options.EnableCookieEncryption]: true,
+      [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+      [FuseV1Options.EnableNodeCliInspectArguments]: false,
+      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+      [FuseV1Options.OnlyLoadAppFromAsar]: true,
+    }),
+  ],
+};
+
+
+================================================================================
+FILE: Overlay.html
+================================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GridTrack — Session</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+
+    body {
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Outfit', sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .overlay-wrap {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      pointer-events: none;
+    }
+
+    .pill {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      background: rgba(12, 12, 14, 0.88);
+      backdrop-filter: blur(24px) saturate(160%);
+      border: 1px solid rgba(201,146,42,0.22);
+      border-radius: 99px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.04), inset 0 1px 0 rgba(255,255,255,0.06);
+      pointer-events: auto;
+      cursor: grab;
+      transition: border-color 0.25s, box-shadow 0.25s;
+      overflow: hidden;
+    }
+
+    .pill:hover {
+      border-color: rgba(201,146,42,0.4);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+
+    .pill:active { cursor: grabbing; }
+
+    .pill-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 18px 10px 20px;
+    }
+
+    .pill-icon {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: rgba(201,146,42,0.12);
+      border: 1px solid rgba(201,146,42,0.25);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .session-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 8px;
+      font-weight: 500;
+      color: rgba(201,146,42,0.7);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin-bottom: 1px;
+    }
+
+    .session-timer {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 20px;
+      font-weight: 600;
+      color: #F5F3EE;
+      letter-spacing: 0.04em;
+      line-height: 1;
+    }
+
+    .pill-divider {
+      width: 1px;
+      height: 32px;
+      background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.1), transparent);
+      flex-shrink: 0;
+    }
+
+    .pill-right {
+      padding: 8px 10px 8px 14px;
+    }
+
+    .exit-btn {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 16px;
+      background: linear-gradient(135deg, rgba(251,113,133,0.18) 0%, rgba(225,29,72,0.22) 100%);
+      border: 1px solid rgba(251,113,133,0.3);
+      border-radius: 99px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.22,1,0.36,1);
+      font-family: 'Outfit', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      color: #FCA5A5;
+      letter-spacing: 0.03em;
+    }
+
+    .exit-btn:hover {
+      background: linear-gradient(135deg, rgba(251,113,133,0.28) 0%, rgba(225,29,72,0.35) 100%);
+      border-color: rgba(251,113,133,0.5);
+      color: #FECDD3;
+      transform: scale(1.02);
+    }
+
+    .exit-btn:active { transform: scale(0.98); }
+
+    .notif-stack {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    .notification {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 16px;
+      background: rgba(12,12,14,0.92);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(201,146,42,0.25);
+      border-radius: 12px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #D6D3CC;
+      animation: notifIn 0.28s cubic-bezier(0.22,1,0.36,1) both;
+      transition: opacity 0.25s, transform 0.25s;
+    }
+
+    @keyframes notifIn {
+      from { opacity: 0; transform: translateX(16px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="overlay-wrap">
+    <div class="pill" id="pill">
+      <div class="pill-left">
+        <div class="pill-icon">
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+            <circle cx="7" cy="7" r="5.5" stroke="#C9922A" stroke-width="1.3"/>
+            <path d="M7 4.5v2.8l1.8 1.2" stroke="#C9922A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="session-info">
+          <div class="session-label">Session</div>
+          <div class="session-timer" id="sessionTimer">00:00</div>
+        </div>
+      </div>
+      <div class="pill-divider"></div>
+      <div class="pill-right">
+        <button class="exit-btn" id="checkoutBtn">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+            <path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+          End Session
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="notif-stack" id="notificationContainer"></div>
+
+  <script>
+    const timerEl = document.getElementById('sessionTimer');
+    let startTs = null;
+    let rafId = null;
+    let running = false;
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+
+    function formatElapsed(ms) {
+      const totalSec = Math.floor(ms / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+    }
+
+    function startTimer() {
+      if (running) stopTimer();
+      startTs = Date.now();
+      running = true;
+      
+      function tick() {
+        if (!running) return;
+        timerEl.textContent = formatElapsed(Date.now() - startTs);
+        rafId = requestAnimationFrame(tick);
+      }
+      tick();
+    }
+
+    function stopTimer() {
+      running = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      timerEl.textContent = '00:00';
+    }
+
+    // Drag functionality
+    const pill = document.getElementById('pill');
+    let dragging = false, ox = 0, oy = 0, startX = 0, startY = 0;
+
+    pill.addEventListener('mousedown', e => {
+      if (e.target.closest('#checkoutBtn')) return;
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const r = pill.getBoundingClientRect();
+      ox = r.left;
+      oy = r.top;
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      const nx = Math.max(8, Math.min(ox + e.clientX - startX, window.innerWidth - pill.offsetWidth - 8));
+      const ny = Math.max(8, Math.min(oy + e.clientY - startY, window.innerHeight - pill.offsetHeight - 8));
+      pill.parentElement.style.cssText = `position:fixed;left:${nx}px;top:${ny}px;bottom:auto`;
+    });
+
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    // Event handlers using window.api
+    if (window.api) {
+      // Session started event
+      window.api.onSessionStarted(() => {
+        startTimer();
+      });
+
+      // Screenshot notification
+      window.api.onScreenshotTaken((filename) => {
+        const container = document.getElementById('notificationContainer');
+        const n = document.createElement('div');
+        n.className = 'notification';
+        n.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="#C9922A" stroke-width="1.2"/><circle cx="7" cy="7.2" r="2" stroke="#C9922A" stroke-width="1.2"/></svg><span>${filename}</span>`;
+        container.appendChild(n);
+        setTimeout(() => {
+          n.style.opacity = '0';
+          n.style.transform = 'translateX(12px)';
+          setTimeout(() => n.remove(), 280);
+        }, 3200);
+      });
+
+      // Next screenshot notification
+      window.api.onNextScreenshot((minutes) => {
+        const container = document.getElementById('notificationContainer');
+        const n = document.createElement('div');
+        n.className = 'notification';
+        n.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="#C9922A" stroke-width="1.3"/><path d="M7 4.5v2.8l1.8 1.2" stroke="#C9922A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Next capture in ~${minutes} min</span>`;
+        container.appendChild(n);
+        setTimeout(() => {
+          n.style.opacity = '0';
+          n.style.transform = 'translateX(12px)';
+          setTimeout(() => n.remove(), 2500);
+        }, 2500);
+      });
+
+      // Checkout button
+      document.getElementById('checkoutBtn').addEventListener('click', async () => {
+        stopTimer();
+        if (window.api.checkOut) await window.api.checkOut();
+      });
+
+      // Auto-start timer if session already active
+      window.api.getStatus().then(status => {
+        if (status && status.hasActiveSession) startTimer();
+      }).catch(err => console.log('Could not get initial status:', err));
+    }
+  </script>
+</body>
+</html>

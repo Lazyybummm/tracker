@@ -9,55 +9,68 @@
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
 
-    body {
+    html, body {
+      width: 300px;
+      height: 90px;
       background: transparent;
       overflow: hidden;
       font-family: 'Outfit', sans-serif;
       -webkit-font-smoothing: antialiased;
     }
 
+    /* No position:fixed — the BrowserWindow itself is positioned by Electron */
     .overlay-wrap {
-      position: fixed;
-      bottom: 20px;
-      left: 20px;
-      pointer-events: none;
+      width: 300px;
+      height: 90px;
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
     }
 
     .pill {
       display: flex;
       align-items: center;
-      gap: 0;
+      width: 100%;
       background: rgba(12, 12, 14, 0.88);
       backdrop-filter: blur(24px) saturate(160%);
+      -webkit-backdrop-filter: blur(24px) saturate(160%);
       border: 1px solid rgba(201,146,42,0.22);
       border-radius: 99px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.04), inset 0 1px 0 rgba(255,255,255,0.06);
-      pointer-events: auto;
+      box-shadow:
+        0 8px 32px rgba(0,0,0,0.45),
+        0 0 0 1px rgba(255,255,255,0.04),
+        inset 0 1px 0 rgba(255,255,255,0.06);
       cursor: grab;
       transition: border-color 0.25s, box-shadow 0.25s;
       overflow: hidden;
+      -webkit-app-region: drag;
     }
 
     .pill:hover {
       border-color: rgba(201,146,42,0.4);
-      box-shadow: 0 12px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.08);
     }
 
-    .pill:active { cursor: grabbing; }
+    /* Buttons inside draggable region must be explicitly no-drag */
+    .exit-btn { -webkit-app-region: no-drag; }
 
     .pill-left {
       display: flex;
       align-items: center;
       gap: 12px;
       padding: 10px 18px 10px 20px;
+      flex: 1;
+      -webkit-app-region: drag;
     }
 
     .pill-icon {
-      width: 28px; height: 28px;
+      width: 28px;
+      height: 28px;
       border-radius: 50%;
       background: rgba(201,146,42,0.12);
       border: 1px solid rgba(201,146,42,0.25);
-      display: flex; align-items: center; justify-content: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
     }
 
@@ -89,6 +102,7 @@
 
     .pill-right {
       padding: 8px 10px 8px 14px;
+      -webkit-app-region: no-drag;
     }
 
     .exit-btn {
@@ -117,6 +131,7 @@
 
     .exit-btn:active { transform: scale(0.98); }
 
+    /* Screenshot notifications — positioned relative to viewport edge */
     .notif-stack {
       position: fixed;
       top: 16px;
@@ -135,6 +150,7 @@
       padding: 9px 16px;
       background: rgba(12,12,14,0.92);
       backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       border: 1px solid rgba(201,146,42,0.25);
       border-radius: 12px;
       box-shadow: 0 6px 20px rgba(0,0,0,0.35);
@@ -147,7 +163,7 @@
 
     @keyframes notifIn {
       from { opacity: 0; transform: translateX(16px); }
-      to { opacity: 1; transform: translateX(0); }
+      to   { opacity: 1; transform: translateX(0); }
     }
   </style>
 </head>
@@ -184,30 +200,28 @@
   <script>
     const timerEl = document.getElementById('sessionTimer');
     let startTs = null;
-    let rafId = null;
+    let rafId   = null;
     let running = false;
 
     function pad(n) { return String(n).padStart(2, '0'); }
 
     function formatElapsed(ms) {
-      const totalSec = Math.floor(ms / 1000);
-      const h = Math.floor(totalSec / 3600);
-      const m = Math.floor((totalSec % 3600) / 60);
-      const s = totalSec % 60;
-      return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+      const s = Math.floor(ms / 1000);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      return h > 0 ? `${pad(h)}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
     }
 
     function startTimer() {
       if (running) stopTimer();
       startTs = Date.now();
       running = true;
-      
-      function tick() {
+      (function tick() {
         if (!running) return;
         timerEl.textContent = formatElapsed(Date.now() - startTs);
         rafId = requestAnimationFrame(tick);
-      }
-      tick();
+      })();
     }
 
     function stopTimer() {
@@ -216,75 +230,42 @@
       timerEl.textContent = '00:00';
     }
 
-    // Drag functionality
-    const pill = document.getElementById('pill');
-    let dragging = false, ox = 0, oy = 0, startX = 0, startY = 0;
+    function addNotification(iconSvg, text, displayMs) {
+      const container = document.getElementById('notificationContainer');
+      const n = document.createElement('div');
+      n.className = 'notification';
+      n.innerHTML = `${iconSvg}<span>${text}</span>`;
+      container.appendChild(n);
+      setTimeout(() => {
+        n.style.opacity = '0';
+        n.style.transform = 'translateX(12px)';
+        setTimeout(() => n.remove(), 280);
+      }, displayMs);
+    }
 
-    pill.addEventListener('mousedown', e => {
-      if (e.target.closest('#checkoutBtn')) return;
-      dragging = true;
-      startX = e.clientX;
-      startY = e.clientY;
-      const r = pill.getBoundingClientRect();
-      ox = r.left;
-      oy = r.top;
-      e.preventDefault();
-    });
+    const ICON_CAMERA = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="#C9922A" stroke-width="1.2"/><circle cx="7" cy="7.2" r="2" stroke="#C9922A" stroke-width="1.2"/></svg>`;
+    const ICON_CLOCK  = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="#C9922A" stroke-width="1.3"/><path d="M7 4.5v2.8l1.8 1.2" stroke="#C9922A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-    document.addEventListener('mousemove', e => {
-      if (!dragging) return;
-      const nx = Math.max(8, Math.min(ox + e.clientX - startX, window.innerWidth - pill.offsetWidth - 8));
-      const ny = Math.max(8, Math.min(oy + e.clientY - startY, window.innerHeight - pill.offsetHeight - 8));
-      pill.parentElement.style.cssText = `position:fixed;left:${nx}px;top:${ny}px;bottom:auto`;
-    });
-
-    document.addEventListener('mouseup', () => { dragging = false; });
-
-    // Event handlers using window.api
     if (window.api) {
-      // Session started event
-      window.api.onSessionStarted(() => {
-        startTimer();
-      });
+      window.api.onSessionStarted(() => startTimer());
 
-      // Screenshot notification
       window.api.onScreenshotTaken((filename) => {
-        const container = document.getElementById('notificationContainer');
-        const n = document.createElement('div');
-        n.className = 'notification';
-        n.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="#C9922A" stroke-width="1.2"/><circle cx="7" cy="7.2" r="2" stroke="#C9922A" stroke-width="1.2"/></svg><span>${filename}</span>`;
-        container.appendChild(n);
-        setTimeout(() => {
-          n.style.opacity = '0';
-          n.style.transform = 'translateX(12px)';
-          setTimeout(() => n.remove(), 280);
-        }, 3200);
+        addNotification(ICON_CAMERA, filename, 3200);
       });
 
-      // Next screenshot notification
       window.api.onNextScreenshot((minutes) => {
-        const container = document.getElementById('notificationContainer');
-        const n = document.createElement('div');
-        n.className = 'notification';
-        n.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="#C9922A" stroke-width="1.3"/><path d="M7 4.5v2.8l1.8 1.2" stroke="#C9922A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Next capture in ~${minutes} min</span>`;
-        container.appendChild(n);
-        setTimeout(() => {
-          n.style.opacity = '0';
-          n.style.transform = 'translateX(12px)';
-          setTimeout(() => n.remove(), 2500);
-        }, 2500);
+        addNotification(ICON_CLOCK, `Next capture in ~${minutes} min`, 2500);
       });
 
-      // Checkout button
       document.getElementById('checkoutBtn').addEventListener('click', async () => {
         stopTimer();
-        if (window.api.checkOut) await window.api.checkOut();
+        await window.api.checkOut();
       });
 
-      // Auto-start timer if session already active
+      // If overlay opens mid-session (e.g. app restart), start the timer immediately
       window.api.getStatus().then(status => {
         if (status && status.hasActiveSession) startTimer();
-      }).catch(err => console.log('Could not get initial status:', err));
+      }).catch(() => {});
     }
   </script>
 </body>

@@ -1,30 +1,36 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
-  // Auth methods
-  saveAuth: (token, user) => ipcRenderer.invoke('save-auth', token, user),
-  getAuth: () => ipcRenderer.invoke('get-auth'),
-  clearAuth: () => ipcRenderer.invoke('clear-auth'),
-  
-  // Tracker methods
-  checkIn: () => ipcRenderer.invoke('check-in'),
-  checkOut: () => ipcRenderer.invoke('check-out'),
+  // Auth
+  saveAuth:  (token, user) => ipcRenderer.invoke('save-auth', token, user),
+  getAuth:   ()            => ipcRenderer.invoke('get-auth'),
+  clearAuth: ()            => ipcRenderer.invoke('clear-auth'),
+
+  // Session
+  checkIn:   () => ipcRenderer.invoke('check-in'),
+  checkOut:  () => ipcRenderer.invoke('check-out'),
   getStatus: () => ipcRenderer.invoke('get-status'),
-  
-  // Events
-  onScreenshotTaken: (callback) => {
-    ipcRenderer.on('screenshot-taken', (event, filename) => callback(filename));
+
+  // Main → Renderer events
+  // Each listener is registered once and returns a cleanup function
+  onScreenshotTaken: (cb) => {
+    const handler = (_, filename) => cb(filename);
+    ipcRenderer.on('screenshot-taken', handler);
+    return () => ipcRenderer.removeListener('screenshot-taken', handler);
   },
-  onStatusUpdate: (callback) => {
-    ipcRenderer.on('status-update', (event, status) => callback(status));
+  onStatusUpdate: (cb) => {
+    const handler = (_, status) => cb(status);
+    ipcRenderer.on('status-update', handler);
+    return () => ipcRenderer.removeListener('status-update', handler);
   },
-  onNextScreenshot: (callback) => {
-    ipcRenderer.on('next-screenshot', (event, minutes) => callback(minutes));
+  onNextScreenshot: (cb) => {
+    const handler = (_, minutes) => cb(minutes);
+    ipcRenderer.on('next-screenshot', handler);
+    return () => ipcRenderer.removeListener('next-screenshot', handler);
   },
-  onSessionStarted: (callback) => {
-    ipcRenderer.on('session-started', () => callback());
-  },
-  
-  // Helper to expose ipcRenderer for overlay
-  getIpcRenderer: () => ipcRenderer
+  onSessionStarted: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('session-started', handler);
+    return () => ipcRenderer.removeListener('session-started', handler);
+  }
 });
