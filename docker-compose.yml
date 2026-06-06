@@ -18,7 +18,10 @@ services:
       R2_BUCKET_NAME: tracker
 
       DATABASE_URL: postgresql://grid:strongpassword@187.127.139.208:5432/biometric
-      JWT_SECRET: stopreadingthesecret
+      
+      # CHANGE THIS - Use the same secret as attendance backend
+      # Attendance backend uses default: CHANGE_THIS_SECRET_IN_PRODUCTION
+      JWT_SECRET: CHANGE_THIS_SECRET_IN_PRODUCTION
 
       MIN_SCREENSHOT_INTERVAL: 60
       MAX_SCREENSHOT_INTERVAL: 300
